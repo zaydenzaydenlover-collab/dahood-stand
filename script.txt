@@ -73,6 +73,7 @@ local PROTECTION_SHOT_WINDOW = 2.0
 local lastHostBodyEffectSnap = {}
 local protectionAmmoPoll = {}
 local hostDamagePulseUntil = 0
+local ownerLastHealthDropTime = 0
 local isProtDebugActive = false
 local lastProtDebugPrint = 0
 local isGlueFollowActive = true
@@ -1523,20 +1524,24 @@ local function playerNearPosition(pos, maxDist, ignorePlayer)
     return bestPlayer
 end
 
+local function ownerRecentlyDamaged()
+    return tick() - ownerLastHealthDropTime <= (PROTECTION_SHOT_WINDOW + 0.35)
+end
+
 local function getAttackerFromBodyEffects(char)
-    if not char then return nil end
+    if not char or not isOwnerCharacterModel(char) then return nil end
     local be = char:FindFirstChild("BodyEffects")
     if not be then return nil end
-    local keys = { "Attacker", "LastAttacker", "ShotBy", "LastDamagedBy", "DamagedBy", "HitBy", "Attacking" }
+    local keys = { "Attacker", "LastAttacker", "ShotBy", "LastDamagedBy", "DamagedBy", "HitBy" }
     for i = 1, #keys do
         local plr = playerFromEffectValue(be:FindFirstChild(keys[i]))
-        if plr and not isWhitelisted(plr) then return plr end
+        if plr and plr ~= getProtectionHost() and not isWhitelisted(plr) then return plr end
     end
     for _, child in ipairs(be:GetChildren()) do
         local lowerName = string.lower(child.Name)
-        if lowerName:find("attack") or lowerName:find("shot") or lowerName:find("damage") or lowerName:find("hit") then
+        if lowerName ~= "attacking" and lowerName:find("last") and (lowerName:find("attack") or lowerName:find("shot") or lowerName:find("damage") or lowerName:find("hit")) then
             local plr = playerFromEffectValue(child)
-            if plr and not isWhitelisted(plr) then return plr end
+            if plr and plr ~= getProtectionHost() and not isWhitelisted(plr) then return plr end
         end
     end
     return nil
@@ -1584,13 +1589,6 @@ local function pollAllPlayerAmmoForShots()
                             local cur = ammo.Value
                             if prev ~= nil and cur < prev then
                                 markProtectionShooter(p)
-                                if isProtectionActive or isProtection2Active then
-                                    if enemyLikelyShootingAtHost(p) then
-                                        hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
-                                        protDebugLog("ammo shot -> engage " .. p.Name)
-                                        engageHostProtectionTarget(p, isProtection2Active)
-                                    end
-                                end
                             end
                             protectionAmmoPoll[child] = cur
                         end
@@ -1661,11 +1659,15 @@ local function clearProtectionRetaliation(idleStatusText)
     end
 end
 
-local function engageHostProtectionTarget(attacker, withStomp)
+local function engageHostProtectionTarget(attacker, withStomp, fromOwnerTouch)
     if not attacker or isWhitelisted(attacker) then return end
     local host = getProtectionHost()
     if not host then return end
     if attacker == host then return end
+    if not fromOwnerTouch and not ownerRecentlyDamaged() then
+        protDebugLog("skip engage (owner not damaged): " .. attacker.Name)
+        return
+    end
     if isLoopkill or isHiding then return end
     if isProtectionRetaliating and currentTarget == attacker then return end
     local now = tick()
@@ -1759,9 +1761,11 @@ local function readHostTrackedHealth(hostChar)
 end
 
 local function onHostHealthDrop(hostChar, lastVal, newVal)
+    if not hostChar or not isOwnerCharacterModel(hostChar) then return end
     if not lastVal or not newVal or newVal >= lastVal - 0.01 then return end
+    ownerLastHealthDropTime = tick()
     hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
-    protDebugLog(string.format("host health drop %.0f -> %.0f", lastVal, newVal))
+    protDebugLog(string.format("owner health drop %.0f -> %.0f", lastVal, newVal))
     tryHostProtectionRetaliation(hostChar)
 end
 
@@ -1779,18 +1783,14 @@ local function scanHostBodyEffectsForDamage(hostChar)
                 changed = true
                 if child.Name == "Health" and child.Value < prev - 0.01 then
                     healthDropped = true
+                    onHostHealthDrop(hostChar, prev, child.Value)
                 end
             end
             snap[child.Name] = child.Value
         end
     end
     lastHostBodyEffectSnap[hostChar] = snap
-    if healthDropped then
-        hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
-        tryHostProtectionRetaliation(hostChar)
-        return true
-    end
-    return changed
+    return healthDropped
 end
 
 local function tryHostProtectionRetaliation(hostChar)
@@ -1811,12 +1811,13 @@ local function tryHostProtectionRetaliation(hostChar)
         end
     end
     if not attacker then return end
-    engageHostProtectionTarget(attacker, isProtection2Active)
+    engageHostProtectionTarget(attacker, isProtection2Active, false)
 end
 
 local function processHostProtectionShot(cmd, payload)
     if not isProtectionActive and not isProtection2Active then return end
     if isUnloaded or isHiding or isLoopkill then return end
+    if not ownerRecentlyDamaged() then return end
     local host = getProtectionHost()
     if not host then return end
     local cmdLower = string.lower(tostring(cmd or ""))
@@ -1825,7 +1826,7 @@ local function processHostProtectionShot(cmd, payload)
             if not hostWasHitInShootPayload(payload) then return end
             local shooter = findShooterFromShootPayload(payload)
             if shooter then
-                engageHostProtectionTarget(shooter, isProtection2Active)
+                engageHostProtectionTarget(shooter, isProtection2Active, false)
             else
                 tryHostProtectionRetaliation(getChar(host))
             end
@@ -1834,6 +1835,7 @@ local function processHostProtectionShot(cmd, payload)
 end
 
 local function processHostProtectionRemote(...)
+    if not ownerRecentlyDamaged() then return end
     local args = { ... }
     for i = 1, #args do
         local a = args[i]
@@ -1861,7 +1863,7 @@ local function bindHostProtectionCharacter(hostChar)
                     if isUnloaded or isHiding or isLoopkill then return end
                     local toucher = getPlayerFromTouchPart(hit)
                     if toucher and host and toucher ~= host then
-                        engageHostProtectionTarget(toucher, isProtection2Active)
+                        engageHostProtectionTarget(toucher, isProtection2Active, true)
                     end
                 end)
             end
@@ -1872,7 +1874,7 @@ local function bindHostProtectionCharacter(hostChar)
         if isUnloaded or isHiding or isLoopkill then return end
         local toucher = getPlayerFromTouchPart(hit)
         if toucher and host and toucher ~= host then
-            engageHostProtectionTarget(toucher, isProtection2Active)
+            engageHostProtectionTarget(toucher, isProtection2Active, true)
         end
     end
     local touchParts = {
@@ -1915,20 +1917,6 @@ local function bindHostProtectionCharacter(hostChar)
                 end
             end
         end
-        be.ChildAdded:Connect(function(child)
-            if isProtectionActive or isProtection2Active then
-                tryHostProtectionRetaliation(hostChar)
-            end
-        end)
-        for _, child in ipairs(be:GetChildren()) do
-            if child:IsA("ValueBase") and child.Name ~= "Health" and child.Name ~= "Health_CLIENT" then
-                child.Changed:Connect(function()
-                    if isProtectionActive or isProtection2Active then
-                        tryHostProtectionRetaliation(hostChar)
-                    end
-                end)
-            end
-        end
         scanHostBodyEffectsForDamage(hostChar)
     end)
 end
@@ -1963,15 +1951,7 @@ RunService.Heartbeat:Connect(function()
                 end
                 lastHostProtectionHealth[hostChar] = cur
             end
-            if scanHostBodyEffectsForDamage(hostChar) then
-                hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
-                tryHostProtectionRetaliation(hostChar)
-            end
-            local beAttacker = getAttackerFromBodyEffects(hostChar)
-            if beAttacker then
-                protDebugLog("BodyEffects attacker -> " .. beAttacker.Name)
-                engageHostProtectionTarget(beAttacker, isProtection2Active)
-            end
+            scanHostBodyEffectsForDamage(hostChar)
         end
     end
     if isProtDebugActive then
