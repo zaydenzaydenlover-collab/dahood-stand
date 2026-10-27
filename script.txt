@@ -225,6 +225,15 @@ local function getCharCombatHealth(char)
     return hum and hum.Health or 0
 end
 
+local GUARD_RADIUS = 95
+
+local function isAliveForCombat(char)
+    if not char or isCharacterKnocked(char) then return false end
+    if getCharCombatHealth(char) > 0 then return true end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    return hum ~= nil and hum.Health > 0
+end
+
 local ownerPlayer = findPlayer(OWNER_NAME)
 local grantedUser = nil
 
@@ -249,9 +258,21 @@ end
 
 local function getLeaderHrp()
     local leader = getLeader()
-    if not leader then return nil end
-    local char = getChar(leader)
-    return char and char:FindFirstChild("HumanoidRootPart")
+    if leader then
+        local char = getChar(leader)
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then return hrp end
+    end
+    local folder = getHoodCharacterFolder()
+    if folder then
+        local ownerLower = string.lower(OWNER_NAME)
+        for _, child in ipairs(folder:GetChildren()) do
+            if string.lower(child.Name) == ownerLower then
+                return child:FindFirstChild("HumanoidRootPart")
+            end
+        end
+    end
+    return nil
 end
 
 Players.PlayerAdded:Connect(function(p)
@@ -843,7 +864,20 @@ local function toggleGKill()
         isFollowing = true
         status.Text = "Status: AUTO-GUARD OFF"
     else
-        status.Text = "Status: AUTO-GUARD (GKILL) ACTIVE"
+        isFollowing = true
+        isOrbiting = false
+        currentTarget = nil
+        if not currentWeapon then
+            currentWeapon = "Revolver"
+            attackSubMode = "combat"
+        end
+        task.defer(function() equipTool(currentWeapon or "Revolver") end)
+        local hrp = getLeaderHrp()
+        if hrp then
+            status.Text = "Status: AUTO-GUARD (GKILL) ACTIVE"
+        else
+            status.Text = "Status: GKILL ON (waiting for leader)"
+        end
     end
 end
 
@@ -1509,18 +1543,19 @@ RunService.RenderStepped:Connect(function()
     local leaderHrp = getLeaderHrp()
 
     if isGuardActive and not isManualTarget and not isLoopkill and not isStomping and not isHiding then
+        leaderHrp = leaderHrp or getLeaderHrp()
         if leaderHrp then
             local nearestEnemy = nil
-            local shortestDist = 50.0
+            local shortestDist = GUARD_RADIUS
             local players = Players:GetPlayers()
             for i = 1, #players do
                 local p = players[i]
                 local isOwnerCheck = (ownerPlayer and p == ownerPlayer)
+                    or string.lower(p.Name) == string.lower(OWNER_NAME)
                 if p ~= leader and p ~= LocalPlayer and not isOwnerCheck and not isWhitelisted(p) then
                     local pChar = getChar(p)
                     local tHrp = pChar and pChar:FindFirstChild("HumanoidRootPart")
-                    local tHum = pChar and pChar:FindFirstChildOfClass("Humanoid")
-                    if tHrp and tHum and tHum.Health > 0 and not isCharacterKnocked(pChar) then
+                    if tHrp and isAliveForCombat(pChar) then
                         local dist = (tHrp.Position - leaderHrp.Position).Magnitude
                         if dist < shortestDist then
                             shortestDist = dist
@@ -1534,12 +1569,14 @@ RunService.RenderStepped:Connect(function()
                 isOrbiting = true
                 isFollowing = false
                 formationMode = "none"
-            else
-                if isOrbiting and currentTarget and not isManualTarget then
-                    currentTarget = nil
-                    isOrbiting = false
-                    isFollowing = true
+                if not currentWeapon then
+                    currentWeapon = "Revolver"
+                    attackSubMode = "combat"
                 end
+            elseif isOrbiting and currentTarget and not isManualTarget then
+                currentTarget = nil
+                isOrbiting = false
+                isFollowing = true
             end
         end
     end
@@ -1579,7 +1616,7 @@ RunService.RenderStepped:Connect(function()
             return
         end
 
-        if not targetChar or not targetHrp or not targetHead or getCharCombatHealth(targetChar) <= 0 then
+        if not targetChar or not targetHrp or not targetHead or not isAliveForCombat(targetChar) then
             if isLoopkill then
                 return
             elseif not isManualTarget and not isGuardActive and not isStomping then
