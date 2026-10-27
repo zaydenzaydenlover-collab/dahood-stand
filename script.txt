@@ -224,6 +224,8 @@ local FORMATION_SMOOTH = 0.55
 local FORMATION_SNAP_DISTANCE = 22
 local FORMATION_RING_RADIUS = 5.5
 local FORMATION_SHIELD_RADIUS = 1
+local COMBAT_ORBIT_RADIUS = 5.4
+local COMBAT_ORBIT_HEIGHT = 14
 local GLUE_RENDER_STEP = "StandoGlueFollow"
 
 -- ==========================================
@@ -1044,19 +1046,27 @@ local function getGlueGoalCFrame(leaderHrp, mode, altIndex, totalAlts)
     return getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
 end
 
-local function getGlueCombatGoalCFrame(targetHead, altIndex, totalAlts)
-    local targetPos = targetHead.Position
+local function buildCombatOrbitCFrame(targetPos, altIndex, totalAlts)
     totalAlts = math.max(1, totalAlts)
-    local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
-    local combatRangeRadius = 5.4
-    local attackOffset = Vector3.new(math.cos(spreadAngle) * combatRangeRadius, 0, math.sin(spreadAngle) * combatRangeRadius)
-    local goal = CFrame.new(targetPos + attackOffset, targetPos)
     if standPositionMode == "hidden" then
-        goal = CFrame.new(targetPos - Vector3.new(0, 5, 0))
-    elseif standPositionMode == "sky" then
-        goal = CFrame.new(targetPos + Vector3.new(0, 20, 0))
+        return CFrame.new(targetPos - Vector3.new(0, 5, 0), targetPos)
     end
-    return goal
+    local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
+    local attackOffset = Vector3.new(
+        math.cos(spreadAngle) * COMBAT_ORBIT_RADIUS,
+        0,
+        math.sin(spreadAngle) * COMBAT_ORBIT_RADIUS
+    )
+    local yLift = 0
+    if standPositionMode == "above" or standPositionMode == "sky" then
+        yLift = COMBAT_ORBIT_HEIGHT
+    end
+    local goalPos = targetPos + attackOffset + Vector3.new(0, yLift, 0)
+    return CFrame.new(goalPos, targetPos)
+end
+
+local function getGlueCombatGoalCFrame(targetHead, altIndex, totalAlts)
+    return buildCombatOrbitCFrame(targetHead.Position, altIndex, totalAlts)
 end
 
 local function getGlueStompGoalCFrame(torso, altIndex, totalAlts)
@@ -1376,6 +1386,26 @@ local function executeCommand(speaker, msg)
         stopAndHide()
     elseif cleanCmd == "walk" or cleanCmd == "stand" or cleanCmd == "follow" then
         startStand()
+    elseif cleanCmd == "pos" or cleanCmd == "position" then
+        if param then
+            local pLower = string.lower(param)
+            if pLower == "above" or pLower == "sky" or pLower == "top" then
+                standPositionMode = "above"
+            elseif pLower == "ring" or pLower == "default" or pLower == "side" then
+                standPositionMode = "default"
+            elseif pLower == "hidden" or pLower == "under" then
+                standPositionMode = "hidden"
+            else
+                status.Text = "Pos: above | ring | hidden"
+                return
+            end
+        else
+            standPositionMode = (standPositionMode == "above" and "default" or "above")
+        end
+        status.Text = "Attack position: " .. standPositionMode
+    elseif cleanCmd == "above" then
+        standPositionMode = "above"
+        status.Text = "Attack position: above"
     elseif cleanCmd == "glue" then
         if param then
             local pLower = string.lower(param)
@@ -1632,20 +1662,10 @@ RunService.RenderStepped:Connect(function()
 
         local targetPos = targetHead.Position
         local altIndex, totalAlts = getAltIndex()
-        totalAlts = math.max(1, totalAlts)
-        local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
-        local combatRangeRadius = 5.4
-        local attackOffset = Vector3.new(math.cos(spreadAngle) * combatRangeRadius, 0, math.sin(spreadAngle) * combatRangeRadius)
 
         if not isGlueFollowActive or not glueSpot then
-            local targetGoalCFrame = CFrame.new(targetPos + attackOffset, targetPos)
-            if standPositionMode == "hidden" then
-                targetGoalCFrame = CFrame.new(targetPos - Vector3.new(0, 5, 0))
-            elseif standPositionMode == "sky" then
-                targetGoalCFrame = CFrame.new(targetPos + Vector3.new(0, 20, 0))
-            end
             myHrp.AssemblyLinearVelocity = Vector3.zero
-            myHrp.CFrame = targetGoalCFrame
+            myHrp.CFrame = buildCombatOrbitCFrame(targetPos, altIndex, totalAlts)
         end
     else
         isKnifeMode = false
