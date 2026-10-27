@@ -202,13 +202,20 @@ end
 
 local function isCharacterKnocked(char)
     if not char then return true end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum and hum.Health <= 0 then return true end
     local be = char:FindFirstChild("BodyEffects")
     if be then
         if be:FindFirstChild("K.O") and be["K.O"].Value == true then return true end
         if be:FindFirstChild("Dead") and be.Dead.Value == true then return true end
+        local hv = be:FindFirstChild("Health")
+        if hv then
+            local n = (hv:IsA("NumberValue") or hv:IsA("IntValue")) and hv.Value or tonumber(hv.Value)
+            if n ~= nil then
+                return n <= 0
+            end
+        end
     end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then return true end
     return false
 end
 
@@ -217,15 +224,16 @@ local function getCharCombatHealth(char)
     local be = char:FindFirstChild("BodyEffects")
     if be then
         local hv = be:FindFirstChild("Health")
-        if hv and (hv:IsA("NumberValue") or hv:IsA("IntValue")) then
-            return hv.Value
+        if hv then
+            local n = (hv:IsA("NumberValue") or hv:IsA("IntValue")) and hv.Value or tonumber(hv.Value)
+            if n ~= nil then return n end
         end
     end
     local hum = char:FindFirstChildOfClass("Humanoid")
     return hum and hum.Health or 0
 end
 
-local GUARD_RADIUS = 95
+local GUARD_RADIUS = 120
 
 local function isAliveForCombat(char)
     if not char or isCharacterKnocked(char) then return false end
@@ -851,8 +859,12 @@ local function startStand()
     status.TextColor3 = Color3.fromRGB(100, 200, 255)
 end
 
-local function toggleGKill()
-    isGuardActive = not isGuardActive
+local function toggleGKill(forceState)
+    if forceState ~= nil then
+        isGuardActive = forceState
+    else
+        isGuardActive = not isGuardActive
+    end
     isLoopkill = false
     loopkillTargetName = nil
     isStomping = false
@@ -867,9 +879,10 @@ local function toggleGKill()
         isFollowing = true
         isOrbiting = false
         currentTarget = nil
+        isGlueFollowActive = true
+        attackSubMode = "combat"
         if not currentWeapon then
             currentWeapon = "Revolver"
-            attackSubMode = "combat"
         end
         task.defer(function() equipTool(currentWeapon or "Revolver") end)
         local hrp = getLeaderHrp()
@@ -1323,7 +1336,14 @@ local function executeCommand(speaker, msg)
         stopSyncDance()
         status.Text = "Sync Dance: OFF"
     elseif cleanCmd == "gkill" or cleanCmd == "gk" then
-        toggleGKill()
+        local gkState = parseOnOff(param)
+        if gkState == true then
+            toggleGKill(true)
+        elseif gkState == false then
+            toggleGKill(false)
+        else
+            toggleGKill()
+        end
     elseif cleanCmd == "silent" or cleanCmd == "silentaim" then
         SilentAim.Enabled = not SilentAim.Enabled
         if SilentAim.Enabled then applyGunHandlerHook() else removeGunHandlerHook() end
@@ -1474,7 +1494,8 @@ RunService.RenderStepped:Connect(function()
     local myHum = char:FindFirstChildOfClass("Humanoid")
     if not myHrp or not myHum then return end
 
-    if isHoldingGun() and not isHiding and myHum.Health > 0 then
+    local myCombatHealth = getCharCombatHealth(char)
+    if isHoldingGun() and not isHiding and (myCombatHealth > 0 or myHum.Health > 0) then
         setRightClick(true)
     else
         setRightClick(false)
@@ -1552,10 +1573,11 @@ RunService.RenderStepped:Connect(function()
                 local p = players[i]
                 local isOwnerCheck = (ownerPlayer and p == ownerPlayer)
                     or string.lower(p.Name) == string.lower(OWNER_NAME)
+                    or string.lower(p.DisplayName) == string.lower(OWNER_NAME)
                 if p ~= leader and p ~= LocalPlayer and not isOwnerCheck and not isWhitelisted(p) then
                     local pChar = getChar(p)
                     local tHrp = pChar and pChar:FindFirstChild("HumanoidRootPart")
-                    if tHrp and isAliveForCombat(pChar) then
+                    if tHrp and pChar and not isCharacterKnocked(pChar) then
                         local dist = (tHrp.Position - leaderHrp.Position).Magnitude
                         if dist < shortestDist then
                             shortestDist = dist
@@ -1569,10 +1591,13 @@ RunService.RenderStepped:Connect(function()
                 isOrbiting = true
                 isFollowing = false
                 formationMode = "none"
+                isGlueFollowActive = true
                 if not currentWeapon then
                     currentWeapon = "Revolver"
                     attackSubMode = "combat"
                 end
+                task.defer(function() equipTool(currentWeapon or "Revolver") end)
+                status.Text = "Status: GKILL -> " .. nearestEnemy.Name
             elseif isOrbiting and currentTarget and not isManualTarget then
                 currentTarget = nil
                 isOrbiting = false
