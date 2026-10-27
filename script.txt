@@ -66,6 +66,9 @@ local function clearCombatIfTarget(player)
     loopkillTargetName = nil
     isStomping = false
     stompTargetName = nil
+    isBringing = false
+    bringTargetName = nil
+    bringPhase = nil
     isManualTarget = false
     currentTarget = nil
     isFollowing = true
@@ -78,6 +81,11 @@ local function addRuntimeWhitelist(player)
     if stompTargetName and string.lower(stompTargetName) == string.lower(player.Name) then
         isStomping = false
         stompTargetName = nil
+    end
+    if bringTargetName and string.lower(bringTargetName) == string.lower(player.Name) then
+        isBringing = false
+        bringTargetName = nil
+        bringPhase = nil
     end
     if loopkillTargetName and string.lower(loopkillTargetName) == string.lower(player.Name) then
         isLoopkill = false
@@ -203,6 +211,12 @@ local isLoopkill = false
 local loopkillTargetName = nil
 local isStomping = false
 local stompTargetName = nil
+local isBringing = false
+local bringTargetName = nil
+local bringPhase = nil
+local bringPhaseTick = 0
+local BRING_HOVER_SEC = 1.7
+local BRING_DROP_SEC = 0.8
 local isManualTarget = false
 local isGuardActive = false
 local isGlueFollowActive = true
@@ -332,7 +346,7 @@ task.spawn(function()
         task.wait(1)
         if isUnloaded then break end
 
-        if isDanceEnabled and not isHiding and not isOrbiting and not isStomping then
+        if isDanceEnabled and not isHiding and not isOrbiting and not isStomping and not isBringing then
             local char = LocalPlayer.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if hum and hum.Health > 0 then
@@ -605,7 +619,7 @@ status.Parent = frame
 
 local function shouldSkipAntiStomp()
     if isUnloaded or not isAntiStompActive then return true end
-    if isStomping or isLoopkill then return true end
+    if isStomping or isBringing or isLoopkill then return true end
     return false
 end
 
@@ -743,6 +757,9 @@ local function fullStopAndReturn()
     loopkillTargetName = nil
     isStomping = false
     stompTargetName = nil
+    isBringing = false
+    bringTargetName = nil
+    bringPhase = nil
     isManualTarget = false
     isGuardActive = false
     currentTarget = nil
@@ -780,6 +797,9 @@ local function stopAndHide()
     loopkillTargetName = nil
     isStomping = false
     stompTargetName = nil
+    isBringing = false
+    bringTargetName = nil
+    bringPhase = nil
     isManualTarget = false
     isGuardActive = false
     formationMode = "none"
@@ -803,6 +823,9 @@ local function startStand()
     loopkillTargetName = nil
     isStomping = false
     stompTargetName = nil
+    isBringing = false
+    bringTargetName = nil
+    bringPhase = nil
     isManualTarget = false
     isGuardActive = false
     currentTarget = nil
@@ -822,6 +845,9 @@ local function toggleGKill()
     loopkillTargetName = nil
     isStomping = false
     stompTargetName = nil
+    isBringing = false
+    bringTargetName = nil
+    bringPhase = nil
     isManualTarget = false
     if not isGuardActive then
         currentTarget = nil
@@ -1075,6 +1101,43 @@ local function getGlueCombatGoalCFrame(orbitPart, altIndex, totalAlts)
     return buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
 end
 
+local function pressGameKey(keyCode)
+    pcall(function()
+        VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
+        VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+    end)
+end
+
+local function getHostTeleportCFrame()
+    local leaderHrp = getLeaderHrp()
+    if not leaderHrp then return nil end
+    local altIndex, totalAlts = getAltIndex()
+    totalAlts = math.max(1, totalAlts)
+    local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
+    local offset = Vector3.new(math.cos(spreadAngle) * 3, 0, math.sin(spreadAngle) * 3)
+    return leaderHrp.CFrame * CFrame.new(offset)
+end
+
+local function teleportAltToHost(hrp)
+    if not hrp then return end
+    local goal = getHostTeleportCFrame()
+    if not goal then return end
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+    hrp.CFrame = goal
+end
+
+local function finishBringFollow()
+    isBringing = false
+    bringTargetName = nil
+    bringPhase = nil
+    bringPhaseTick = 0
+    currentTarget = nil
+    isOrbiting = false
+    isFollowing = true
+    status.Text = "Status: FOLLOWING"
+end
+
 local function getGlueStompGoalCFrame(torso, altIndex, totalAlts)
     totalAlts = math.max(1, totalAlts)
     altIndex = math.clamp(altIndex, 1, totalAlts)
@@ -1087,7 +1150,7 @@ end
 
 local function isGlueMovementActive()
     if isUnloaded or not isGlueFollowActive or isHiding then return false end
-    if isStomping then return true end
+    if isStomping or isBringing then return true end
     return isFollowing or isOrbiting
 end
 
@@ -1121,20 +1184,36 @@ local function runGlueHeartbeat()
     local altIndex, totalAlts = getAltIndex()
     local gluedStomp = false
 
-    if isStomping and stompTargetName then
-        local stompPlayer = findPlayer(stompTargetName)
-        if stompPlayer and not isWhitelisted(stompPlayer) then
-            local theirChar = getChar(stompPlayer)
+    local bodyHoverName = (isStomping and stompTargetName) or (isBringing and bringTargetName and (bringPhase == "hover" or bringPhase == "drop_wait") and bringTargetName)
+    if bodyHoverName then
+        local bodyPlayer = findPlayer(bodyHoverName)
+        if bodyPlayer and not isWhitelisted(bodyPlayer) then
+            local theirChar = getChar(bodyPlayer)
             if theirChar then
                 local targetBE = theirChar:FindFirstChild("BodyEffects")
                 local targetHum = theirChar:FindFirstChildOfClass("Humanoid")
                 local knocked = (targetBE and targetBE:FindFirstChild("K.O") and targetBE["K.O"].Value == true)
                     or (targetHum and targetHum.Health <= 0)
-                if knocked then
+                if knocked and isStomping then
                     local torso = theirChar:FindFirstChild("UpperTorso") or theirChar:FindFirstChild("Torso") or theirChar:FindFirstChild("HumanoidRootPart")
                     if torso then
                         pin = torso.AssemblyRootPart or torso
                         glueSpot = getGlueStompGoalCFrame(torso, altIndex, totalAlts)
+                        gluedStomp = true
+                    end
+                elseif knocked and isBringing and bringPhase == "hover" then
+                    local torso = theirChar:FindFirstChild("UpperTorso") or theirChar:FindFirstChild("Torso") or theirChar:FindFirstChild("HumanoidRootPart")
+                    if torso then
+                        pin = torso.AssemblyRootPart or torso
+                        glueSpot = getGlueStompGoalCFrame(torso, altIndex, totalAlts)
+                        gluedStomp = true
+                    end
+                elseif isBringing and bringPhase == "drop_wait" then
+                    local hostGoal = getHostTeleportCFrame()
+                    if hostGoal then
+                        pin = getLeaderHrp()
+                        pin = pin and (pin.AssemblyRootPart or pin)
+                        glueSpot = hostGoal
                         gluedStomp = true
                     end
                 end
@@ -1152,7 +1231,7 @@ local function runGlueHeartbeat()
                 pin = (torso and torso.AssemblyRootPart) or th
                 glueSpot = getGlueCombatGoalCFrame(orbitPart, altIndex, totalAlts)
             end
-        elseif isFollowing and not isStomping then
+        elseif isFollowing and not isStomping and not isBringing then
             local host = getLeader()
             if not host or host == LocalPlayer then return end
             local theirChar = getChar(host)
@@ -1161,11 +1240,11 @@ local function runGlueHeartbeat()
             local torso = theirChar:FindFirstChild("UpperTorso") or theirChar:FindFirstChild("Torso")
             pin = (torso and torso.AssemblyRootPart) or th
             glueSpot = getGlueGoalCFrame(th, formationMode, altIndex, totalAlts)
-        elseif isStomping then
-            -- Stomp chase: same glue combat orbit as knock/k
-            local stompPlayer = findPlayer(stompTargetName)
-            if stompPlayer and not isWhitelisted(stompPlayer) then
-                local theirChar = getChar(stompPlayer)
+        elseif isStomping or (isBringing and bringPhase == "knock") then
+            local chaseName = isStomping and stompTargetName or bringTargetName
+            local chasePlayer = chaseName and findPlayer(chaseName)
+            if chasePlayer and not isWhitelisted(chasePlayer) then
+                local theirChar = getChar(chasePlayer)
                 th = theirChar and theirChar:FindFirstChild("HumanoidRootPart")
                 local orbitPart = getOrbitPart(theirChar)
                 if th and orbitPart then
@@ -1313,6 +1392,9 @@ local function executeCommand(speaker, msg)
             isLoopkill = true
             isStomping = false
             stompTargetName = nil
+            isBringing = false
+            bringTargetName = nil
+            bringPhase = nil
             isManualTarget = true
             isGuardActive = false
             currentTarget = t
@@ -1330,6 +1412,9 @@ local function executeCommand(speaker, msg)
             isGlueFollowActive = true
             isLoopkill = false
             loopkillTargetName = nil
+            isBringing = false
+            bringTargetName = nil
+            bringPhase = nil
             isManualTarget = true
             isGuardActive = false
             currentTarget = t
@@ -1339,6 +1424,32 @@ local function executeCommand(speaker, msg)
             formationMode = "none"
             status.Text = "Status: STOMPING " .. t.Name
         end
+    elseif cleanCmd == "bring" or cleanCmd == "br" then
+        local t = findPlayer(param)
+        if t and not isWhitelisted(t) then
+            bringTargetName = t.Name
+            isBringing = true
+            bringPhase = "knock"
+            bringPhaseTick = 0
+            isGlueFollowActive = true
+            isStomping = false
+            stompTargetName = nil
+            isLoopkill = false
+            loopkillTargetName = nil
+            isManualTarget = true
+            isGuardActive = false
+            currentTarget = t
+            isOrbiting = true
+            isFollowing = false
+            isHiding = false
+            formationMode = "none"
+            if not currentWeapon then
+                currentWeapon = "Revolver"
+                attackSubMode = "combat"
+            end
+            equipTool(currentWeapon or "Revolver")
+            status.Text = "Status: BRINGING " .. t.Name
+        end
     elseif cleanCmd == "knock" or cleanCmd == "k" then
         local t = findPlayer(param)
         if t and not isWhitelisted(t) then
@@ -1346,6 +1457,9 @@ local function executeCommand(speaker, msg)
             loopkillTargetName = nil
             isStomping = false
             stompTargetName = nil
+            isBringing = false
+            bringTargetName = nil
+            bringPhase = nil
             isManualTarget = true
             isGuardActive = false
             currentTarget = t
@@ -1537,11 +1651,68 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
+    -- Bring Mode (knock -> hover -> grab -> host -> drop)
+    if isBringing and bringTargetName then
+        local targetPlayer = findPlayer(bringTargetName)
+        if not targetPlayer then
+            finishBringFollow()
+        else
+            local targetChar = getChar(targetPlayer)
+            if not targetChar then return end
+            local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
+            local targetBE = targetChar:FindFirstChild("BodyEffects")
+            local targetIsKnocked = (targetBE and targetBE:FindFirstChild("K.O") and targetBE["K.O"].Value == true)
+                or (targetHum and targetHum.Health <= 0)
+            local normalTorso = targetChar:FindFirstChild("Torso") or targetChar:FindFirstChild("UpperTorso")
+                or targetChar:FindFirstChild("HumanoidRootPart")
+
+            if not targetIsKnocked or not normalTorso then
+                bringPhase = "knock"
+                currentTarget = targetPlayer
+                isOrbiting = true
+            else
+                isOrbiting = false
+                if bringPhase == "knock" then
+                    bringPhase = "hover"
+                    bringPhaseTick = tick()
+                end
+
+                if bringPhase == "hover" then
+                    if not isGlueFollowActive then
+                        myHrp.AssemblyLinearVelocity = Vector3.zero
+                        myHrp.AssemblyAngularVelocity = Vector3.zero
+                        myHrp.CFrame = CFrame.new(
+                            normalTorso.Position + Vector3.new(0, 3.2, 0),
+                            normalTorso.Position + Vector3.new(0, 3.2, 1)
+                        )
+                    end
+                    if tick() - bringPhaseTick >= BRING_HOVER_SEC then
+                        pressGameKey(Enum.KeyCode.G)
+                        teleportAltToHost(myHrp)
+                        bringPhase = "drop_wait"
+                        bringPhaseTick = tick()
+                        status.Text = "Status: BRING (to host)"
+                    end
+                    return
+                elseif bringPhase == "drop_wait" then
+                    if not isGlueFollowActive then
+                        teleportAltToHost(myHrp)
+                    end
+                    if tick() - bringPhaseTick >= BRING_DROP_SEC then
+                        pressGameKey(Enum.KeyCode.G)
+                        finishBringFollow()
+                    end
+                    return
+                end
+            end
+        end
+    end
+
     -- Guard / GKILL Mode
     local leader = getLeader()
     local leaderHrp = getLeaderHrp()
 
-    if isGuardActive and not isManualTarget and not isLoopkill and not isStomping and not isHiding then
+    if isGuardActive and not isManualTarget and not isLoopkill and not isStomping and not isBringing and not isHiding then
         if leaderHrp then
             local nearestEnemy = nil
             local shortestDist = 50.0
@@ -1586,7 +1757,7 @@ RunService.RenderStepped:Connect(function()
     local isKnifeMode = (attackSubMode == "knife" or attackSubMode == "pitch" or attackSubMode == "sign" or attackSubMode == "whip")
 
     if isOrbiting and currentTarget then
-        if not isStomping then
+        if not isStomping and not isBringing then
             isGlueFollowActive = true
         end
         if isWhitelisted(currentTarget) then
@@ -1617,7 +1788,7 @@ RunService.RenderStepped:Connect(function()
         if not targetChar or not targetHum or targetHum.Health <= 0 or not targetHrp or not orbitPart then
             if isLoopkill then
                 return
-            elseif not isManualTarget and not isGuardActive and not isStomping then
+            elseif not isManualTarget and not isGuardActive and not isStomping and not isBringing then
                 currentTarget = nil
                 isOrbiting = false
                 isFollowing = true
@@ -1627,10 +1798,14 @@ RunService.RenderStepped:Connect(function()
                 isOrbiting = false
                 isFollowing = true
                 return
-            elseif not isStomping then
+            elseif not isStomping and not isBringing then
                 fullStopAndReturn()
                 return
             end
+        end
+
+        if isBringing and bringPhase ~= "knock" then
+            return
         end
 
         if currentWeapon then
