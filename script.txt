@@ -267,7 +267,7 @@ local function getProtectionHostModels()
     local models = {}
     local seen = {}
     local function add(m)
-        if m and not seen[m] then
+        if m and not seen[m] and isOwnerCharacterModel(m) then
             seen[m] = true
             models[#models + 1] = m
         end
@@ -284,20 +284,23 @@ local function getProtectionHostModels()
         for _, child in ipairs(folder:GetChildren()) do
             if string.lower(child.Name) == ownerLower and child:FindFirstChild("HumanoidRootPart") then
                 add(child)
-            elseif host and string.lower(child.Name) == string.lower(host.Name) and child:FindFirstChild("HumanoidRootPart") then
-                add(child)
             end
         end
     end
     return models
 end
 
-local function isProtectionHostCharacter(char)
-    if not char then return false end
-    for _, model in ipairs(getProtectionHostModels()) do
-        if model == char then return true end
-    end
+local function isOwnerCharacterModel(model)
+    if not model then return false end
+    local ownerLower = string.lower(OWNER_NAME)
+    if string.lower(model.Name) == ownerLower then return true end
+    local host = getProtectionHost()
+    if host and string.lower(model.Name) == string.lower(host.Name) then return true end
     return false
+end
+
+local function isProtectionHostCharacter(char)
+    return isOwnerCharacterModel(char)
 end
 
 local function getProtectionHostRoot()
@@ -1406,12 +1409,6 @@ local function modelBelongsToPlayer(model, player)
     local hoodChar = getChar(player)
     if hoodChar == model then return true end
     if string.lower(model.Name) == string.lower(player.Name) then return true end
-    if string.lower(model.Name) == string.lower(OWNER_NAME) and player == getProtectionHost() then return true end
-    local folder = getHoodCharacterFolder()
-    if folder and model.Parent == folder then
-        if player == getProtectionHost() then return true end
-        if string.lower(model.Name) == string.lower(OWNER_NAME) then return true end
-    end
     return false
 end
 
@@ -1710,8 +1707,14 @@ local function hostWasHitInShootPayload(payload)
         if type(hit) == "table" then
             local model = hit.MODEL or hit.Model or hit.model
             local part = hit.PART or hit.Part or hit.part
-            if modelBelongsToPlayer(model, host) or partBelongsToPlayer(part, host) then
+            if isOwnerCharacterModel(model) then
                 return true
+            end
+            if part and part:IsA("BasePart") then
+                local hitModel = part:FindFirstAncestorOfClass("Model")
+                if isOwnerCharacterModel(hitModel) then
+                    return true
+                end
             end
         end
     end
