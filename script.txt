@@ -1101,10 +1101,12 @@ local function getGlueCombatGoalCFrame(orbitPart, altIndex, totalAlts)
     return buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
 end
 
-local function pressGameKey(keyCode)
+local function fireGrabbing()
     pcall(function()
-        VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
-        VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+        local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+        if mainEvent then
+            mainEvent:FireServer("Grabbing")
+        end
     end)
 end
 
@@ -1687,7 +1689,7 @@ RunService.RenderStepped:Connect(function()
                         )
                     end
                     if tick() - bringPhaseTick >= BRING_HOVER_SEC then
-                        pressGameKey(Enum.KeyCode.G)
+                        fireGrabbing()
                         teleportAltToHost(myHrp)
                         bringPhase = "drop_wait"
                         bringPhaseTick = tick()
@@ -1699,7 +1701,7 @@ RunService.RenderStepped:Connect(function()
                         teleportAltToHost(myHrp)
                     end
                     if tick() - bringPhaseTick >= BRING_DROP_SEC then
-                        pressGameKey(Enum.KeyCode.G)
+                        fireGrabbing()
                         finishBringFollow()
                     end
                     return
