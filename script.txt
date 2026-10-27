@@ -619,17 +619,36 @@ status.Parent = frame
 
 local function shouldSkipAntiStomp()
     if isUnloaded or not isAntiStompActive then return true end
-    if isStomping or isBringing or isLoopkill then return true end
     return false
+end
+
+local function isCombatTaskActive()
+    return isStomping or isBringing or isLoopkill or isOrbiting or isManualTarget
+end
+
+local function triggerForceReset()
+    local now = tick()
+    if now - lastAntiStompTick < 0.45 then return end
+    lastAntiStompTick = now
+    if typeof(replicatesignal) == "function" then
+        pcall(function() replicatesignal(LocalPlayer.Kill) end)
+        return
+    end
+    if fireHoodResetCharacter() then return end
+    local char = getChar(LocalPlayer)
+    if char then
+        pcall(function() char:BreakJoints() end)
+    end
 end
 
 local function triggerAntiStompKill()
     if shouldSkipAntiStomp() then return end
-    local now = tick()
-    if now - lastAntiStompTick < 0.45 then return end
-    lastAntiStompTick = now
-    if typeof(replicatesignal) ~= "function" then return end
-    pcall(function() replicatesignal(LocalPlayer.Kill) end)
+    triggerForceReset()
+end
+
+local function triggerCombatDeathReset()
+    if isUnloaded or not isCombatTaskActive() then return end
+    triggerForceReset()
 end
 
 local function armAntiStomp(character)
@@ -647,6 +666,13 @@ local function armAntiStomp(character)
     end
     if not ko then return end
 
+    local hum = character:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.Died:Connect(function()
+            triggerCombatDeathReset()
+        end)
+    end
+
     if antiStompKoConn then
         antiStompKoConn:Disconnect()
         antiStompKoConn = nil
@@ -657,14 +683,22 @@ local function armAntiStomp(character)
         local dead = effects:FindFirstChild("Dead")
         if not (ko.Parent and ko.Value == true) then return end
         if dead and dead.Value == true then return end
-        triggerAntiStompKill()
+        if isCombatTaskActive() then
+            triggerForceReset()
+        else
+            triggerAntiStompKill()
+        end
         task.wait(0.5)
     end)
 
-    if ko.Value == true and not shouldSkipAntiStomp() then
+    if ko.Value == true then
         local dead = effects:FindFirstChild("Dead")
         if not (dead and dead.Value == true) then
-            triggerAntiStompKill()
+            if isCombatTaskActive() then
+                triggerForceReset()
+            elseif not shouldSkipAntiStomp() then
+                triggerAntiStompKill()
+            end
         end
     end
 end
