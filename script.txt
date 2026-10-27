@@ -248,6 +248,7 @@ local FORMATION_SHIELD_RADIUS = 1
 local FORMATION_BOX_HALF_W = 5
 local FORMATION_BOX_HALF_D = 4
 local FORMATION_TRI_SIDE = 8
+local FORMATION_WEDGE_STEP = 2.75
 local COMBAT_ORBIT_RADIUS = 5.4
 local COMBAT_ORBIT_HEIGHT = 14
 local GLUE_RENDER_STEP = "StandoGlueFollow"
@@ -1105,6 +1106,11 @@ local function formationLocalToWorld(leaderHrp, localX, localZ)
     return center + flatRight * localX + flatLook * localZ
 end
 
+local function formationCFrameFaceForward(leaderHrp, goalPos)
+    local _, flatLook = getHostFlatBasis(leaderHrp)
+    return CFrame.new(goalPos, goalPos + flatLook)
+end
+
 local function formationCFrameFaceHost(leaderHrp, goalPos)
     local center = leaderHrp.Position
     local toHost = Vector3.new(center.X - goalPos.X, 0, center.Z - goalPos.Z)
@@ -1193,6 +1199,38 @@ local function getTriangleWorldPosition(leaderHrp, altIndex, totalAlts, side)
     return lerpVec3(vLeft, vApex, t)
 end
 
+local function buildWedgeSlotPositions(leaderHrp, totalAlts)
+    local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
+    local step = FORMATION_WEDGE_STEP
+    local slots = {}
+    slots[#slots + 1] = center + flatLook * (step * 0.85)
+
+    local maxDepth = math.max(6, math.ceil(totalAlts / 2))
+    for depth = 1, maxDepth do
+        local back = depth * step
+        slots[#slots + 1] = center - flatLook * back - flatRight * back
+        slots[#slots + 1] = center - flatLook * back + flatRight * back
+        if depth == 3 or depth == 4 then
+            slots[#slots + 1] = center - flatLook * back
+        end
+    end
+
+    while #slots < totalAlts do
+        maxDepth = maxDepth + 1
+        local back = maxDepth * step
+        slots[#slots + 1] = center - flatLook * back - flatRight * back
+        slots[#slots + 1] = center - flatLook * back + flatRight * back
+    end
+
+    return slots
+end
+
+local function getWedgeWorldPosition(leaderHrp, altIndex, totalAlts)
+    local slots = buildWedgeSlotPositions(leaderHrp, totalAlts)
+    local idx = math.clamp(altIndex, 1, totalAlts)
+    return slots[idx] or slots[#slots]
+end
+
 local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
     totalAlts = math.max(1, totalAlts)
     altIndex = math.clamp(altIndex, 1, totalAlts)
@@ -1208,7 +1246,15 @@ local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
         return formationCFrameFaceHost(leaderHrp, goalPos)
     end
 
+    if mode == "wedge" or mode == "v" then
+        local goalPos = getWedgeWorldPosition(leaderHrp, altIndex, totalAlts)
+        return formationCFrameFaceForward(leaderHrp, goalPos)
+    end
+
     local radius = math.clamp(FORMATION_RING_RADIUS + (totalAlts - 1) * 0.15, 4.5, 7)
+    if mode ~= "circle" and mode ~= "shield" and mode ~= "none" then
+        mode = "circle"
+    end
     if mode == "shield" then
         radius = FORMATION_SHIELD_RADIUS
     end
@@ -1692,6 +1738,10 @@ local function executeCommand(speaker, msg)
         formationMode = "triangle"
         isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
         status.Text = "Formation: Triangle"
+    elseif cleanCmd == "wedge" or cleanCmd == "v" then
+        formationMode = "wedge"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        status.Text = "Formation: Wedge"
     elseif cleanCmd == "circle" then
         formationMode = "circle"
         isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
