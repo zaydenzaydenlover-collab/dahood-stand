@@ -73,6 +73,8 @@ local PROTECTION_SHOT_WINDOW = 2.0
 local lastHostBodyEffectSnap = {}
 local protectionAmmoPoll = {}
 local hostDamagePulseUntil = 0
+local isProtDebugActive = false
+local lastProtDebugPrint = 0
 local isGlueFollowActive = true
 local glueDesync = false
 local glueSpot = nil
@@ -330,6 +332,34 @@ local function shooterAimHitsProtectionHost(shooterPlayer)
         end
     end
     return false
+end
+
+local function enemyLikelyShootingAtHost(shooterPlayer)
+    if not shooterPlayer then return false end
+    if shooterAimHitsProtectionHost(shooterPlayer) then return true end
+    local hostRoot = getProtectionHostRoot()
+    if not hostRoot then return false end
+    local shooterChar = getChar(shooterPlayer)
+    if not shooterChar then return false end
+    local pHrp = shooterChar:FindFirstChild("HumanoidRootPart")
+    if not pHrp then return false end
+    local dist = (pHrp.Position - hostRoot.Position).Magnitude
+    if dist > 160 then return false end
+    local tool = shooterChar:FindFirstChildOfClass("Tool")
+    if not isCombatTool(tool) then return false end
+    local toHost = hostRoot.Position - pHrp.Position
+    local flat = Vector3.new(toHost.X, 0, toHost.Z)
+    if flat.Magnitude < 0.5 then return true end
+    flat = flat.Unit
+    local look = Vector3.new(pHrp.CFrame.LookVector.X, 0, pHrp.CFrame.LookVector.Z)
+    if look.Magnitude < 0.05 then return dist < 45 end
+    look = look.Unit
+    return look:Dot(flat) > 0.2 and dist < 120
+end
+
+local function protDebugLog(msg)
+    if not isProtDebugActive then return end
+    print("[Stando Prot] " .. tostring(msg))
 end
 
 Players.PlayerAdded:Connect(function(p)
@@ -1558,8 +1588,9 @@ local function pollAllPlayerAmmoForShots()
                             if prev ~= nil and cur < prev then
                                 markProtectionShooter(p)
                                 if isProtectionActive or isProtection2Active then
-                                    if shooterAimHitsProtectionHost(p) then
+                                    if enemyLikelyShootingAtHost(p) then
                                         hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
+                                        protDebugLog("ammo shot -> engage " .. p.Name)
                                         engageHostProtectionTarget(p, isProtection2Active)
                                     end
                                 end
@@ -1879,8 +1910,31 @@ RunService.Heartbeat:Connect(function()
             end
             local beAttacker = getAttackerFromBodyEffects(hostChar)
             if beAttacker then
+                protDebugLog("BodyEffects attacker -> " .. beAttacker.Name)
                 engageHostProtectionTarget(beAttacker, isProtection2Active)
             end
+        end
+    end
+    if isProtDebugActive then
+        local now = tick()
+        if now - lastProtDebugPrint >= 3 then
+            lastProtDebugPrint = now
+            local host = getProtectionHost()
+            local models = getProtectionHostModels()
+            local hp = "?"
+            if #models > 0 then
+                local hum = models[1]:FindFirstChildOfClass("Humanoid")
+                if hum then hp = tostring(math.floor(hum.Health)) end
+            end
+            protDebugLog(string.format(
+                "on=%s on2=%s host=%s models=%d hp=%s retaliating=%s",
+                tostring(isProtectionActive),
+                tostring(isProtection2Active),
+                host and host.Name or "nil",
+                #models,
+                hp,
+                tostring(isProtectionRetaliating)
+            ))
         end
     end
 end)
@@ -1971,6 +2025,7 @@ local function executeCommand(speaker, msg)
             isProtection2Active = false
             ensureProtectionShooterWatchers()
             status.Text = "Status: PROTECT " .. hostLabel .. " ON"
+            protDebugLog("protection ON host=" .. hostLabel .. " models=" .. #getProtectionHostModels())
         elseif state == false then
             isProtectionActive = false
             if isProtectionRetaliating and not isProtection2Active then
@@ -1990,6 +2045,7 @@ local function executeCommand(speaker, msg)
             isProtectionActive = false
             ensureProtectionShooterWatchers()
             status.Text = "Status: PROTECT2 " .. hostLabel .. " ON"
+            protDebugLog("protection2 ON host=" .. hostLabel .. " models=" .. #getProtectionHostModels())
         elseif state == false then
             isProtection2Active = false
             if isProtectionRetaliating then
@@ -1999,6 +2055,18 @@ local function executeCommand(speaker, msg)
             end
         else
             status.Text = "Usage: .protection2 on/off"
+        end
+    elseif (cleanCmd == "protdebug" or cleanCmd == "protectiondebug") and isOwner then
+        local state = parseOnOff(param)
+        if state == true then
+            isProtDebugActive = true
+            status.Text = "Prot debug: ON (F9 console on alts)"
+        elseif state == false then
+            isProtDebugActive = false
+            status.Text = "Prot debug: OFF"
+        else
+            isProtDebugActive = not isProtDebugActive
+            status.Text = "Prot debug: " .. (isProtDebugActive and "ON" or "OFF")
         end
     elseif cleanCmd == "dance" or cleanCmd == "syncdance" then
         isDanceEnabled = not isDanceEnabled
@@ -2418,6 +2486,50 @@ local function handleChat(speaker, message)
     executeCommand(speaker, message)
 end
 
+local function hookTextChannel(channel)
+    if not channel or not channel:IsA("TextChannel") then return end
+    if channel:GetAttribute("StandoChatHook") then return end
+    channel:SetAttribute("StandoChatHook", true)
+    channel.MessageReceived:Connect(function(txt)
+        if not txt or not txt.TextSource then return end
+        local sender = Players:GetPlayerByUserId(txt.TextSource.UserId)
+        if sender then handleChat(sender, txt.Text) end
+    end)
+end
+
+local function connectAllChatChannels()
+    pcall(function()
+        local folders = { TextChatService:FindFirstChild("TextChannels"), TextChatService:FindFirstChild("ChannelTabs") }
+        for _, folder in ipairs(folders) do
+            if folder then
+                for _, ch in ipairs(folder:GetDescendants()) do
+                    hookTextChannel(ch)
+                end
+                folder.DescendantAdded:Connect(function(ch)
+                    hookTextChannel(ch)
+                end)
+            end
+        end
+    end)
+    pcall(function()
+        if TextChatService.GetTextChannels then
+            for _, channel in ipairs(TextChatService:GetTextChannels()) do
+                hookTextChannel(channel)
+            end
+        end
+    end)
+    pcall(function()
+        if TextChatService.MessageReceived then
+            TextChatService.MessageReceived:Connect(function(message)
+                if message and message.TextSource then
+                    local sender = Players:GetPlayerByUserId(message.TextSource.UserId)
+                    if sender then handleChat(sender, message.Text) end
+                end
+            end)
+        end
+    end)
+end
+
 local players = Players:GetPlayers()
 for i = 1, #players do
     local p = players[i]
@@ -2427,25 +2539,17 @@ Players.PlayerAdded:Connect(function(p)
     p.Chatted:Connect(function(msg) handleChat(p, msg) end)
 end)
 
-pcall(function()
-    for _, channel in ipairs(TextChatService:GetTextChannels()) do
-        channel.MessageReceived:Connect(function(txt)
-            if txt.TextSource then
-                local sender = Players:GetPlayerByUserId(txt.TextSource.UserId)
-                if sender then handleChat(sender, txt.Text) end
-            end
+task.spawn(function()
+    connectAllChatChannels()
+    local tc = TextChatService:WaitForChild("TextChannels", 15)
+    if tc then
+        for _, ch in ipairs(tc:GetChildren()) do
+            hookTextChannel(ch)
+        end
+        tc.ChildAdded:Connect(function(ch)
+            hookTextChannel(ch)
         end)
     end
-    TextChatService.ChildAdded:Connect(function(child)
-        if child:IsA("TextChannel") then
-            child.MessageReceived:Connect(function(txt)
-                if txt.TextSource then
-                    local sender = Players:GetPlayerByUserId(txt.TextSource.UserId)
-                    if sender then handleChat(sender, txt.Text) end
-                end
-            end)
-        end
-    end)
 end)
 
 task.defer(function()
