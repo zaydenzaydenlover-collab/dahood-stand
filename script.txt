@@ -206,6 +206,11 @@ local formationMode = "none"
 
 local isOrbiting = false
 local isHiding = false
+local voidHideLastPos = nil
+local voidHideWasOn = false
+local VOID_HIDE_OFFSET = 9999999999999999999
+local VOID_HIDE_PUSH_WRITES = 5000
+local VOID_HIDE_RESTORE_WRITES = 10000
 local isFollowing = true
 local isLoopkill = false
 local loopkillTargetName = nil
@@ -841,13 +846,55 @@ local function stopAndHide()
     local char = LocalPlayer.Character
     if char and char:FindFirstChild("HumanoidRootPart") then
         local hrp = char.HumanoidRootPart
+        if not voidHideLastPos then
+            voidHideLastPos = hrp.Position
+        end
         hrp.Anchored = false
         hrp.AssemblyLinearVelocity = Vector3.zero
         hrp.AssemblyAngularVelocity = Vector3.zero
     end
-    status.Text = "Status: SKY ZIP HIDE (FAST MOVE)"
+    status.Text = "Status: VOID HIDE"
     status.TextColor3 = Color3.fromRGB(255, 165, 0)
 end
+
+task.spawn(function()
+    while not isUnloaded do
+        if isHiding then
+            local char = getChar(LocalPlayer)
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                voidHideWasOn = true
+                for i = 1, VOID_HIDE_PUSH_WRITES do
+                    if not isHiding or isUnloaded then break end
+                    local p = hrp.Position
+                    hrp.CFrame = CFrame.new(
+                        p.X + VOID_HIDE_OFFSET,
+                        p.Y + VOID_HIDE_OFFSET,
+                        p.Z + VOID_HIDE_OFFSET
+                    )
+                end
+                task.wait(0.016)
+            else
+                task.wait(0.02)
+            end
+        else
+            task.wait(0.02)
+            local char = getChar(LocalPlayer)
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                if voidHideWasOn and voidHideLastPos then
+                    for i = 1, VOID_HIDE_RESTORE_WRITES do
+                        hrp.CFrame = CFrame.new(voidHideLastPos)
+                        hrp.AssemblyLinearVelocity = Vector3.zero
+                        hrp.AssemblyAngularVelocity = Vector3.zero
+                    end
+                    voidHideWasOn = false
+                end
+                voidHideLastPos = hrp.Position
+            end
+        end
+    end
+end)
 
 local function startStand()
     isFollowing = true
@@ -1354,7 +1401,7 @@ makeButton("Toggle Sync Dance (.dance)", 308, function()
     if not isDanceEnabled then stopSyncDance() end
     status.Text = "Sync Dance: " .. (isDanceEnabled and "ON" or "OFF")
 end)
-makeButton("Stop & Sky-Zip Hide", 334, stopAndHide)
+makeButton("Void Hide (.hide)", 334, stopAndHide)
 makeButton("Low GFX", 360, function()
     local descendants = workspace:GetDescendants()
     for i = 1, #descendants do
@@ -1626,20 +1673,7 @@ RunService.RenderStepped:Connect(function()
         setRightClick(false)
     end
 
-    -- Sky-zip Hiding
     if isHiding then
-        myHrp.Anchored = false
-        myHrp.AssemblyLinearVelocity = Vector3.zero
-        myHrp.AssemblyAngularVelocity = Vector3.zero
-        local timeVal = tick() * 15
-        local altIndex, totalAlts = getAltIndex()
-        local offsetAngle = ((altIndex - 1) / math.max(1, totalAlts)) * (2 * math.pi)
-        
-        local rx = math.sin(timeVal + offsetAngle) * 45000
-        local rz = math.cos(timeVal * 0.9 + offsetAngle) * 45000
-        local ry = 50000 + (math.sin(timeVal * 2 + altIndex) * 3000)
-        
-        myHrp.CFrame = CFrame.new(rx, ry, rz)
         return
     end
 
