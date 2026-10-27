@@ -46,6 +46,46 @@ local WHITELISTED_USERS = {
     ["wveaklur"] = true,
 }
 
+local currentTarget = nil
+local currentWeapon = nil
+local attackSubMode = "combat"
+local standPositionMode = "default"
+local formationMode = "none"
+local isOrbiting = false
+local isHiding = false
+local isFollowing = true
+local isLoopkill = false
+local loopkillTargetName = nil
+local isStomping = false
+local stompTargetName = nil
+local isManualTarget = false
+local isGuardActive = false
+local isProtectionActive = false
+local isProtection2Active = false
+local isProtectionRetaliating = false
+local protectionRetaliateCooldown = {}
+local hostProtectionBound = {}
+local lastHostProtectionHealth = {}
+local PROTECTION_RETALIATE_COOLDOWN = 1.25
+local isGlueFollowActive = true
+local glueDesync = false
+local glueSpot = nil
+local glueReal = nil
+local glueVelocity = nil
+local glueSpin = nil
+local isAntiStompActive = true
+local antiStompKoConn = nil
+local lastAntiStompTick = 0
+local lastStompETick = 0
+local hitboxScaleSize = 30
+local defaultHitboxSize = Vector3.new(2, 2, 1)
+local FORMATION_SPACING = 4
+local FORMATION_SMOOTH = 0.55
+local FORMATION_SNAP_DISTANCE = 22
+local FORMATION_RING_RADIUS = 5.5
+local GLUE_RENDER_STEP = "StandoGlueFollow"
+local isAimingDownSights = false
+
 local function isWhitelisted(player)
     if not player then return false end
     local nameLower = string.lower(player.Name)
@@ -122,10 +162,10 @@ local function getChar(player)
     return player.Character
 end
 
-do
+task.spawn(function()
     local deadline = tick() + 45
     repeat task.wait() until getChar(LocalPlayer) or tick() > deadline
-end
+end)
 
 local function fireHoodResetCharacter()
     local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
@@ -184,52 +224,6 @@ LocalPlayer.Idled:Connect(function()
     VirtualUser:CaptureController()
     VirtualUser:ClickButton2(Vector2.new())
 end)
-
-
-local currentTarget = nil
-local currentWeapon = nil
-local attackSubMode = "combat"
-local standPositionMode = "default"
-local formationMode = "none"
-
-local isOrbiting = false
-local isHiding = false
-local isFollowing = true
-local isLoopkill = false
-local loopkillTargetName = nil
-local isStomping = false
-local stompTargetName = nil
-local isManualTarget = false
-local isGuardActive = false
-local isProtectionActive = false
-local isProtection2Active = false
-local isProtectionRetaliating = false
-local protectionRetaliateCooldown = {}
-local hostProtectionBound = {}
-local lastHostProtectionHealth = {}
-local PROTECTION_RETALIATE_COOLDOWN = 1.25
-local isGlueFollowActive = true
-local glueDesync = false
-local glueSpot = nil
-local glueReal = nil
-local glueVelocity = nil
-local glueSpin = nil
-local isAntiStompActive = true
-local antiStompKoConn = nil
-local lastAntiStompTick = 0
-local lastStompETick = 0
-
-local hitboxScaleSize = 30
-local defaultHitboxSize = Vector3.new(2, 2, 1)
-
-local FORMATION_SPACING = 4
-local FORMATION_SMOOTH = 0.55
-local FORMATION_SNAP_DISTANCE = 22
-local FORMATION_RING_RADIUS = 5.5
-local GLUE_RENDER_STEP = "StandoGlueFollow"
-
-
-local isAimingDownSights = false
 
 local function setRightClick(state)
     if isAimingDownSights == state then return end
@@ -494,40 +488,46 @@ end
 local standoProcessHostProtectionShot = nil
 
 pcall(function()
-    if hookmetamethod then
-        local oldNamecall
-        oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            local args = {...}
-            if (method == "FireServer" or method == "fireServer") and self and self.Name == "MainEvent" then
+    if not hookmetamethod or typeof(newcclosure) ~= "function" then return end
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+        local args = { ... }
+        pcall(function()
+            if (method == "FireServer" or method == "fireServer")
+                and typeof(self) == "Instance"
+                and self.Name == "MainEvent"
+            then
                 local cmd = args[1]
                 if type(cmd) == "string" and standoProcessHostProtectionShot then
                     local lower = string.lower(cmd)
                     if lower == "shoot" or lower == "hit" then
-                        pcall(function() standoProcessHostProtectionShot(cmd, args[2]) end)
+                        standoProcessHostProtectionShot(cmd, args[2])
                     end
                 end
             end
-            if not checkcaller() and SilentAim.Enabled and (method == "FireServer" or method == "fireServer") then
-                local cmd = tostring(args[1])
-                if cmd == "UpdateMousePos" or cmd == "UpdateMousePosI" or cmd == "MousePos" then
-                    local best = getBestSilentTarget()
-                    if best and best.Part then
-                        args[2] = best.Part.Position
-                        return oldNamecall(self, unpack(args))
-                    end
-                elseif cmd == "ShootGun" then
-                    local best = getBestSilentTarget()
-                    if best and best.Part then
-                        args[4] = best.Part.Position
-                        args[5] = best.Part
-                        return oldNamecall(self, unpack(args))
-                    end
+        end)
+        if typeof(checkcaller) == "function" and not checkcaller() and SilentAim.Enabled
+            and (method == "FireServer" or method == "fireServer")
+        then
+            local cmd = tostring(args[1])
+            if cmd == "UpdateMousePos" or cmd == "UpdateMousePosI" or cmd == "MousePos" then
+                local best = getBestSilentTarget()
+                if best and best.Part then
+                    args[2] = best.Part.Position
+                    return oldNamecall(self, table.unpack(args))
+                end
+            elseif cmd == "ShootGun" then
+                local best = getBestSilentTarget()
+                if best and best.Part then
+                    args[4] = best.Part.Position
+                    args[5] = best.Part
+                    return oldNamecall(self, table.unpack(args))
                 end
             end
-            return oldNamecall(self, ...)
-        end))
-    end
+        end
+        return oldNamecall(self, ...)
+    end))
 end)
 
 if SilentAim.Enabled then
@@ -679,6 +679,8 @@ local function makeButton(name, yPos, callback)
     btn.Parent = frame
     btn.MouseButton1Click:Connect(callback)
 end
+
+local setupToolReloadListener
 
 local function unequipAll()
     setRightClick(false)
@@ -890,7 +892,7 @@ local function checkAutoReloadOnTool(tool)
     end
 end
 
-local function setupToolReloadListener(tool)
+setupToolReloadListener = function(tool)
     if not tool or reloadHookedTools[tool] then return end
     reloadHookedTools[tool] = true
     local ammoVal, maxAmmoVal = getToolAmmoValues(tool)
@@ -1464,16 +1466,18 @@ local function bindHostProtectionCharacter(hostChar)
             engageHostProtectionTarget(toucher, isProtection2Active)
         end
     end
-    for _, desc in ipairs(hostChar:GetDescendants()) do
-        if desc:IsA("BasePart") then
-            desc.Touched:Connect(onHostTouched)
+    local touchParts = {
+        hostChar:FindFirstChild("HumanoidRootPart"),
+        hostChar:FindFirstChild("UpperTorso"),
+        hostChar:FindFirstChild("Torso"),
+        hostChar:FindFirstChild("Head"),
+    }
+    for i = 1, #touchParts do
+        local part = touchParts[i]
+        if part and part:IsA("BasePart") then
+            part.Touched:Connect(onHostTouched)
         end
     end
-    hostChar.DescendantAdded:Connect(function(desc)
-        if desc:IsA("BasePart") then
-            desc.Touched:Connect(onHostTouched)
-        end
-    end)
     local hum = hostChar:FindFirstChildOfClass("Humanoid")
     if hum then
         lastHostProtectionHealth[hostChar] = hum.Health
@@ -2067,3 +2071,4 @@ task.defer(function()
 end)
 
 getgenv().StandoUnload = ejectScript
+print("[Stando] Loaded OK")
