@@ -238,6 +238,22 @@ local function getLeaderHrp()
     return char and char:FindFirstChild("HumanoidRootPart")
 end
 
+local function getProtectionHost()
+    if not ownerPlayer or not ownerPlayer.Parent then
+        ownerPlayer = findPlayer(OWNER_NAME)
+    end
+    return ownerPlayer
+end
+
+local function isProtectionHostCharacter(char)
+    local host = getProtectionHost()
+    if not host or not char then return false end
+    for _, model in ipairs(getAllCharModels(host)) do
+        if model == char then return true end
+    end
+    return false
+end
+
 local thisoneissocoldww = Instance.new("ScreenGui")
 thisoneissocoldww.Name = "thisoneissocoldww"
 thisoneissocoldww.Parent = game.CoreGui
@@ -1443,7 +1459,7 @@ local function findClosestArmedThreat(host, hostHrp)
 end
 
 local function pollAllPlayerAmmoForShots()
-    local host = getLeader()
+    local host = getProtectionHost()
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= host and not isWhitelisted(p) then
             for _, char in ipairs(getAllCharModels(p)) do
@@ -1455,21 +1471,6 @@ local function pollAllPlayerAmmoForShots()
                             local cur = ammo.Value
                             if prev ~= nil and cur < prev then
                                 markProtectionShooter(p)
-                                if isProtectionActive or isProtection2Active then
-                                    local hostChar = getChar(host)
-                                    local hostHrp = hostChar and hostChar:FindFirstChild("HumanoidRootPart")
-                                    local pHrp = char:FindFirstChild("HumanoidRootPart")
-                                    if hostHrp and pHrp then
-                                        local flatAim = Vector3.new(pHrp.CFrame.LookVector.X, 0, pHrp.CFrame.LookVector.Z)
-                                        local flatToHost = hostHrp.Position - pHrp.Position
-                                        flatToHost = Vector3.new(flatToHost.X, 0, flatToHost.Z)
-                                        if flatAim.Magnitude > 0.05 and flatToHost.Magnitude > 0.05 then
-                                            if flatAim.Unit:Dot(flatToHost.Unit) > 0.18 then
-                                                engageHostProtectionTarget(p, isProtection2Active)
-                                            end
-                                        end
-                                    end
-                                end
                             end
                             protectionAmmoPoll[child] = cur
                         end
@@ -1539,8 +1540,9 @@ end
 
 local function engageHostProtectionTarget(attacker, withStomp)
     if not attacker or isWhitelisted(attacker) then return end
-    local host = getLeader()
-    if host and attacker == host then return end
+    local host = getProtectionHost()
+    if not host then return end
+    if attacker == host then return end
     if isLoopkill or isHiding then return end
     if isProtectionRetaliating and currentTarget == attacker then return end
     local now = tick()
@@ -1574,7 +1576,7 @@ local function engageHostProtectionTarget(attacker, withStomp)
 end
 
 local function hostWasHitInShootPayload(payload)
-    local host = getLeader()
+    local host = getProtectionHost()
     if not host or type(payload) ~= "table" then return false end
     local hits = payload.HITS or payload.Hits or payload.hits
     if type(hits) ~= "table" then return false end
@@ -1603,7 +1605,7 @@ local function findShooterFromShootPayload(payload)
     end
     local origin = vecToVector3(payload.ORIGIN or payload.Origin or payload.origin)
     if origin then
-        return playerNearPosition(origin, 28, getLeader())
+        return playerNearPosition(origin, 28, getProtectionHost())
     end
     return nil
 end
@@ -1630,22 +1632,21 @@ end
 local function tryHostProtectionRetaliation(hostChar)
     if not isProtectionActive and not isProtection2Active then return end
     if isUnloaded or isHiding or isLoopkill then return end
-    local host = getLeader()
-    if not host or not hostChar then return end
+    local host = getProtectionHost()
+    if not host or not hostChar or not isProtectionHostCharacter(hostChar) then return end
     local attacker = getAttackerFromBodyEffects(hostChar)
     if not attacker then
         local hostHrp = hostChar:FindFirstChild("HumanoidRootPart")
         attacker = findLikelyShooterAtHost(hostHrp, host)
     end
     if not attacker then return end
-    if LocalPlayer == host then return end
     engageHostProtectionTarget(attacker, isProtection2Active)
 end
 
 local function processHostProtectionShot(cmd, payload)
     if not isProtectionActive and not isProtection2Active then return end
     if isUnloaded or isHiding or isLoopkill then return end
-    local host = getLeader()
+    local host = getProtectionHost()
     if not host then return end
     local cmdLower = string.lower(tostring(cmd or ""))
     if cmdLower == "shoot" or cmdLower == "hit" or cmdLower == "bullets" or cmdLower == "damage" then
@@ -1677,8 +1678,9 @@ standoProcessHostProtectionShot = processHostProtectionShot
 
 local function bindHostProtectionCharacter(hostChar)
     if not hostChar or hostProtectionBound[hostChar] then return end
+    if not isProtectionHostCharacter(hostChar) then return end
     hostProtectionBound[hostChar] = true
-    local host = getLeader()
+    local host = getProtectionHost()
     local special = hostChar:FindFirstChild("SpecialParts")
     if special then
         for _, part in ipairs(special:GetChildren()) do
@@ -1750,7 +1752,7 @@ task.spawn(function()
     while not isUnloaded do
         if isProtectionActive or isProtection2Active then
             ensureProtectionShooterWatchers()
-            local host = getLeader()
+            local host = getProtectionHost()
             if host then
                 for _, hostChar in ipairs(getAllCharModels(host)) do
                     bindHostProtectionCharacter(hostChar)
@@ -1765,26 +1767,27 @@ RunService.Heartbeat:Connect(function()
     if not isProtectionActive and not isProtection2Active then return end
     if isUnloaded or isHiding or isLoopkill then return end
     pollAllPlayerAmmoForShots()
-    local host = getLeader()
+    local host = getProtectionHost()
     if not host then return end
-    if LocalPlayer == host then return end
     for _, hostChar in ipairs(getAllCharModels(host)) do
-        local hum = hostChar:FindFirstChildOfClass("Humanoid")
-        if hum then
-            local last = lastHostProtectionHealth[hostChar]
-            if last and hum.Health < last - 0.01 then
+        if isProtectionHostCharacter(hostChar) then
+            local hum = hostChar:FindFirstChildOfClass("Humanoid")
+            if hum then
+                local last = lastHostProtectionHealth[hostChar]
+                if last and hum.Health < last - 0.01 then
+                    hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
+                    tryHostProtectionRetaliation(hostChar)
+                end
+                lastHostProtectionHealth[hostChar] = hum.Health
+            end
+            if scanHostBodyEffectsForDamage(hostChar) then
                 hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
                 tryHostProtectionRetaliation(hostChar)
             end
-            lastHostProtectionHealth[hostChar] = hum.Health
-        end
-        if scanHostBodyEffectsForDamage(hostChar) then
-            hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
-            tryHostProtectionRetaliation(hostChar)
-        end
-        local beAttacker = getAttackerFromBodyEffects(hostChar)
-        if beAttacker then
-            engageHostProtectionTarget(beAttacker, isProtection2Active)
+            local beAttacker = getAttackerFromBodyEffects(hostChar)
+            if beAttacker then
+                engageHostProtectionTarget(beAttacker, isProtection2Active)
+            end
         end
     end
 end)
@@ -1866,36 +1869,40 @@ local function executeCommand(speaker, msg)
     elseif (cleanCmd == "unwl" or cleanCmd == "unwhitelist") and isOwner then
         local ok, msg = removeRuntimeWhitelist(findPlayer(param))
         status.Text = ok and msg or (msg or "WL: player not found!")
-    elseif cleanCmd == "protection" or cleanCmd == "prot" then
+    elseif (cleanCmd == "protection" or cleanCmd == "prot") and isOwner then
         local state = parseOnOff(param)
+        local host = getProtectionHost()
+        local hostLabel = host and host.Name or OWNER_NAME
         if state == true then
             isProtectionActive = true
             isProtection2Active = false
             ensureProtectionShooterWatchers()
-            status.Text = "Status: HOST PROTECTION ON"
+            status.Text = "Status: PROTECT " .. hostLabel .. " ON"
         elseif state == false then
             isProtectionActive = false
             if isProtectionRetaliating and not isProtection2Active then
-                clearProtectionRetaliation("Status: HOST PROTECTION OFF")
+                clearProtectionRetaliation("Status: PROTECT " .. hostLabel .. " OFF")
             else
-                status.Text = "Status: HOST PROTECTION OFF"
+                status.Text = "Status: PROTECT " .. hostLabel .. " OFF"
             end
         else
             status.Text = "Usage: .protection on/off"
         end
-    elseif cleanCmd == "protection2" or cleanCmd == "prot2" then
+    elseif (cleanCmd == "protection2" or cleanCmd == "prot2") and isOwner then
         local state = parseOnOff(param)
+        local host = getProtectionHost()
+        local hostLabel = host and host.Name or OWNER_NAME
         if state == true then
             isProtection2Active = true
             isProtectionActive = false
             ensureProtectionShooterWatchers()
-            status.Text = "Status: HOST PROTECTION2 ON (stomp)"
+            status.Text = "Status: PROTECT2 " .. hostLabel .. " ON"
         elseif state == false then
             isProtection2Active = false
             if isProtectionRetaliating then
-                clearProtectionRetaliation("Status: HOST PROTECTION2 OFF")
+                clearProtectionRetaliation("Status: PROTECT2 " .. hostLabel .. " OFF")
             else
-                status.Text = "Status: HOST PROTECTION2 OFF"
+                status.Text = "Status: PROTECT2 " .. hostLabel .. " OFF"
             end
         else
             status.Text = "Usage: .protection2 on/off"
