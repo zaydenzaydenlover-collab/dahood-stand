@@ -247,7 +247,7 @@ local FORMATION_RING_RADIUS = 5.5
 local FORMATION_SHIELD_RADIUS = 1
 local FORMATION_BOX_HALF_W = 5
 local FORMATION_BOX_HALF_D = 4
-local FORMATION_TRI_SIDE = 6.5
+local FORMATION_TRI_SIDE = 8
 local COMBAT_ORBIT_RADIUS = 5.4
 local COMBAT_ORBIT_HEIGHT = 14
 local GLUE_RENDER_STEP = "StandoGlueFollow"
@@ -1082,8 +1082,27 @@ local function getAltIndex()
     return 1, n
 end
 
+local function getHostFlatBasis(leaderHrp)
+    local center = leaderHrp.Position
+    local look = leaderHrp.CFrame.LookVector
+    local flatLook = Vector3.new(look.X, 0, look.Z)
+    if flatLook.Magnitude < 0.05 then
+        flatLook = Vector3.new(0, 0, -1)
+    else
+        flatLook = flatLook.Unit
+    end
+    local flatRight = Vector3.new(-flatLook.Z, 0, flatLook.X)
+    if flatRight.Magnitude < 0.05 then
+        flatRight = Vector3.new(1, 0, 0)
+    else
+        flatRight = flatRight.Unit
+    end
+    return center, flatLook, flatRight
+end
+
 local function formationLocalToWorld(leaderHrp, localX, localZ)
-    return (leaderHrp.CFrame * CFrame.new(localX, 0, localZ)).Position
+    local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
+    return center + flatRight * localX + flatLook * localZ
 end
 
 local function formationCFrameFaceHost(leaderHrp, goalPos)
@@ -1136,19 +1155,42 @@ local function getBoxLocalPosition(altIndex, totalAlts, halfW, halfD)
     return -halfW, lerp2(halfD, -halfD, t)
 end
 
-local function getTriangleLocalPosition(altIndex, totalAlts, side)
-    side = math.max(4, side)
+local function lerpVec3(a, b, t)
+    return a + (b - a) * t
+end
+
+local function getTriangleVertices(leaderHrp, side)
+    side = math.max(5, side)
+    local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
     local h = side * math.sqrt(3) / 2
-    local ax, az = -side * 0.5, -h / 3
-    local bx, bz = side * 0.5, -h / 3
-    local cx, cz = 0, (2 * h) / 3
-    local edgeIdx, t = getPerimeterPoint2D(altIndex, totalAlts, { side, side, side })
-    if edgeIdx == 1 then
-        return lerp2(ax, bx, t), lerp2(az, bz, t)
-    elseif edgeIdx == 2 then
-        return lerp2(bx, cx, t), lerp2(bz, cz, t)
+    -- Apex in front of host; base behind (host at triangle center)
+    local vApex = center + flatLook * (2 * h / 3)
+    local vLeft = center - flatLook * (h / 3) - flatRight * (side / 2)
+    local vRight = center - flatLook * (h / 3) + flatRight * (side / 2)
+    return vApex, vLeft, vRight, side
+end
+
+local function getTriangleWorldPosition(leaderHrp, altIndex, totalAlts, side)
+    local vApex, vLeft, vRight, s = getTriangleVertices(leaderHrp, side)
+    if totalAlts == 1 then
+        return vApex
     end
-    return lerp2(cx, ax, t), lerp2(cz, az, t)
+    if totalAlts == 2 then
+        if altIndex == 1 then return vLeft end
+        return vRight
+    end
+    if totalAlts == 3 then
+        if altIndex == 1 then return vApex end
+        if altIndex == 2 then return vLeft end
+        return vRight
+    end
+    local edgeIdx, t = getPerimeterPoint2D(altIndex, totalAlts, { s, s, s })
+    if edgeIdx == 1 then
+        return lerpVec3(vApex, vRight, t)
+    elseif edgeIdx == 2 then
+        return lerpVec3(vRight, vLeft, t)
+    end
+    return lerpVec3(vLeft, vApex, t)
 end
 
 local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
@@ -1162,8 +1204,8 @@ local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
     end
 
     if mode == "triangle" then
-        local lx, lz = getTriangleLocalPosition(altIndex, totalAlts, FORMATION_TRI_SIDE)
-        return formationCFrameFaceHost(leaderHrp, formationLocalToWorld(leaderHrp, lx, lz))
+        local goalPos = getTriangleWorldPosition(leaderHrp, altIndex, totalAlts, FORMATION_TRI_SIDE)
+        return formationCFrameFaceHost(leaderHrp, goalPos)
     end
 
     local radius = math.clamp(FORMATION_RING_RADIUS + (totalAlts - 1) * 0.15, 4.5, 7)
