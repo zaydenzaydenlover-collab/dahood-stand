@@ -66,7 +66,10 @@ local isProtectionRetaliating = false
 local protectionRetaliateCooldown = {}
 local hostProtectionBound = {}
 local lastHostProtectionHealth = {}
+local protectionShooterWatchBound = {}
+local protectionLastShotTime = {}
 local PROTECTION_RETALIATE_COOLDOWN = 1.25
+local PROTECTION_SHOT_WINDOW = 1.1
 local isGlueFollowActive = true
 local glueDesync = false
 local glueSpot = nil
@@ -501,8 +504,14 @@ pcall(function()
                 local cmd = args[1]
                 if type(cmd) == "string" and standoProcessHostProtectionShot then
                     local lower = string.lower(cmd)
-                    if lower == "shoot" or lower == "hit" then
+                    if lower == "shoot" or lower == "hit" or lower == "bullets" or lower == "damage" then
                         standoProcessHostProtectionShot(cmd, args[2])
+                    end
+                end
+                if type(cmd) == "string" then
+                    local lower = string.lower(cmd)
+                    if lower == "shoot" or lower == "shootgun" or lower == "bullets" then
+                        markProtectionShooter(LocalPlayer)
                     end
                 end
             end
@@ -1247,14 +1256,112 @@ local function modelBelongsToPlayer(model, player)
     if not model or not player then return false end
     if player.Character == model then return true end
     local hoodChar = getChar(player)
-    return hoodChar == model
+    if hoodChar == model then return true end
+    if string.lower(model.Name) == string.lower(player.Name) then
+        local chars = workspace:FindFirstChild("Players")
+        chars = chars and chars:FindFirstChild("Characters")
+        if chars and model.Parent == chars then return true end
+    end
+    return false
 end
 
-local function playerNearPosition(pos, maxDist)
+local function partBelongsToPlayer(part, player)
+    if not part or not player then return false end
+    if part:IsA("BasePart") then
+        local model = part:FindFirstAncestorOfClass("Model")
+        if modelBelongsToPlayer(model, player) then return true end
+    end
+    return false
+end
+
+local function markProtectionShooter(player)
+    if player and player.UserId then
+        protectionLastShotTime[player.UserId] = tick()
+    end
+end
+
+local function getRecentProtectionShooter(hostPlayer)
+    local now = tick()
+    local bestPlayer, bestDt = nil, PROTECTION_SHOT_WINDOW + 1
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= hostPlayer and not isWhitelisted(p) then
+            local t = protectionLastShotTime[p.UserId]
+            if t then
+                local dt = now - t
+                if dt <= PROTECTION_SHOT_WINDOW and dt < bestDt then
+                    bestDt = dt
+                    bestPlayer = p
+                end
+            end
+        end
+    end
+    return bestPlayer
+end
+
+local function hookProtectionShooterTool(player, tool)
+    if not player or not tool or not tool:IsA("Tool") then return end
+    if tool:GetAttribute("StandoProtTool") then return end
+    tool:SetAttribute("StandoProtTool", true)
+    if player == LocalPlayer then
+        tool.Activated:Connect(function()
+            markProtectionShooter(player)
+        end)
+    end
+    local ammo = tool:FindFirstChild("Ammo", true)
+    if ammo and (ammo:IsA("IntValue") or ammo:IsA("NumberValue")) then
+        local lastAmmo = ammo.Value
+        ammo.Changed:Connect(function(newVal)
+            if newVal < lastAmmo then
+                markProtectionShooter(player)
+            end
+            lastAmmo = newVal
+        end)
+    end
+end
+
+local function bindProtectionShooterWatch(player)
+    if not player or protectionShooterWatchBound[player] then return end
+    protectionShooterWatchBound[player] = true
+    local function onChar(char)
+        if not char then return end
+        for _, child in ipairs(char:GetChildren()) do
+            hookProtectionShooterTool(player, child)
+        end
+        char.ChildAdded:Connect(function(child)
+            hookProtectionShooterTool(player, child)
+        end)
+    end
+    local char = getChar(player)
+    if char then onChar(char) end
+    player.CharacterAdded:Connect(function(c)
+        onChar(c)
+    end)
+    task.spawn(function()
+        while player.Parent and not isUnloaded do
+            local hoodChar = getChar(player)
+            if hoodChar then
+                onChar(hoodChar)
+            end
+            task.wait(0.8)
+        end
+    end)
+end
+
+local function ensureProtectionShooterWatchers()
+    for _, p in ipairs(Players:GetPlayers()) do
+        bindProtectionShooterWatch(p)
+    end
+end
+
+Players.PlayerAdded:Connect(function(p)
+    bindProtectionShooterWatch(p)
+end)
+
+local function playerNearPosition(pos, maxDist, ignorePlayer)
     maxDist = maxDist or 22
     local bestPlayer, bestDist = nil, maxDist
     for _, p in ipairs(Players:GetPlayers()) do
-        if not isWhitelisted(p) then
+        if p ~= ignorePlayer and not isWhitelisted(p) then
             local pChar = getChar(p)
             local hrp = pChar and pChar:FindFirstChild("HumanoidRootPart")
             if hrp then
@@ -1299,10 +1406,12 @@ end
 
 local function findLikelyShooterAtHost(hostHrp, hostPlayer)
     if not hostHrp then return nil end
+    local recent = getRecentProtectionShooter(hostPlayer)
+    if recent then return recent end
     local hostPos = hostHrp.Position
     local bestPlayer, bestScore = nil, -math.huge
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= hostPlayer and p ~= LocalPlayer and not isWhitelisted(p) then
+        if p ~= hostPlayer and not isWhitelisted(p) then
             local pChar = getChar(p)
             local pHrp = pChar and pChar:FindFirstChild("HumanoidRootPart")
             local pHum = pChar and pChar:FindFirstChildOfClass("Humanoid")
@@ -1320,7 +1429,7 @@ local function findLikelyShooterAtHost(hostHrp, hostPlayer)
                             local tool = pChar:FindFirstChildOfClass("Tool")
                             local hasGun = isCombatTool(tool)
                             local score = aimDot + (hasGun and 0.75 or 0) - (dist / 400)
-                            if (hasGun and aimDot > 0.3) or aimDot > 0.62 then
+                            if (hasGun and aimDot > 0.12) or aimDot > 0.45 then
                                 if score > bestScore then
                                     bestScore = score
                                     bestPlayer = p
@@ -1392,7 +1501,8 @@ local function hostWasHitInShootPayload(payload)
     for _, hit in ipairs(hits) do
         if type(hit) == "table" then
             local model = hit.MODEL or hit.Model or hit.model
-            if modelBelongsToPlayer(model, host) then
+            local part = hit.PART or hit.Part or hit.part
+            if modelBelongsToPlayer(model, host) or partBelongsToPlayer(part, host) then
                 return true
             end
         end
@@ -1413,7 +1523,7 @@ local function findShooterFromShootPayload(payload)
     end
     local origin = vecToVector3(payload.ORIGIN or payload.Origin or payload.origin)
     if origin then
-        return playerNearPosition(origin, 24)
+        return playerNearPosition(origin, 28, getLeader())
     end
     return nil
 end
@@ -1438,17 +1548,29 @@ local function processHostProtectionShot(cmd, payload)
     if isUnloaded or isHiding or isLoopkill then return end
     local host = getLeader()
     if not host then return end
-    local cmdLower = string.lower(tostring(cmd))
-    if cmdLower == "shoot" or cmdLower == "hit" then
-        if not hostWasHitInShootPayload(payload) then return end
-        local shooter = findShooterFromShootPayload(payload)
-        if shooter then
-            engageHostProtectionTarget(shooter, isProtection2Active)
-        else
-            tryHostProtectionRetaliation(getChar(host))
+    local cmdLower = string.lower(tostring(cmd or ""))
+    if cmdLower == "shoot" or cmdLower == "hit" or cmdLower == "bullets" or cmdLower == "damage" then
+        if type(payload) == "table" and (payload.HITS or payload.Hits or payload.hits) then
+            if not hostWasHitInShootPayload(payload) then return end
+            local shooter = findShooterFromShootPayload(payload)
+            if shooter then
+                engageHostProtectionTarget(shooter, isProtection2Active)
+            else
+                tryHostProtectionRetaliation(getChar(host))
+            end
         end
-    elseif cmdLower == "shootgun" then
-        tryHostProtectionRetaliation(getChar(host))
+    end
+end
+
+local function processHostProtectionRemote(...)
+    local args = { ... }
+    for i = 1, #args do
+        local a = args[i]
+        if type(a) == "string" then
+            processHostProtectionShot(a, args[i + 1])
+        elseif type(a) == "table" and (a.HITS or a.Hits or a.hits) then
+            processHostProtectionShot("Shoot", a)
+        end
     end
 end
 
@@ -1497,12 +1619,23 @@ local function bindHostProtectionCharacter(hostChar)
                 tryHostProtectionRetaliation(hostChar)
             end
         end)
+        for _, child in ipairs(be:GetChildren()) do
+            if child:IsA("ValueBase") then
+                child.Changed:Connect(function()
+                    if isProtectionActive or isProtection2Active then
+                        tryHostProtectionRetaliation(hostChar)
+                    end
+                end)
+            end
+        end
     end)
 end
 
 task.spawn(function()
+    ensureProtectionShooterWatchers()
     while not isUnloaded do
         if isProtectionActive or isProtection2Active then
+            ensureProtectionShooterWatchers()
             local host = getLeader()
             if host then
                 local hostChar = getChar(host)
@@ -1515,13 +1648,42 @@ task.spawn(function()
     end
 end)
 
+RunService.Heartbeat:Connect(function()
+    if not isProtectionActive and not isProtection2Active then return end
+    if isUnloaded or isHiding or isLoopkill then return end
+    local host = getLeader()
+    if not host then return end
+    local hostChar = getChar(host)
+    if not hostChar then return end
+    local hum = hostChar:FindFirstChildOfClass("Humanoid")
+    if hum then
+        local last = lastHostProtectionHealth[hostChar]
+        if last and hum.Health < last - 0.01 then
+            tryHostProtectionRetaliation(hostChar)
+        end
+        lastHostProtectionHealth[hostChar] = hum.Health
+    end
+    local beAttacker = getAttackerFromBodyEffects(hostChar)
+    if beAttacker then
+        engageHostProtectionTarget(beAttacker, isProtection2Active)
+    end
+end)
+
+local function connectProtectionRemote(remote)
+    if not remote or remote:GetAttribute("StandoProtListen") then return end
+    remote:SetAttribute("StandoProtListen", true)
+    remote.OnClientEvent:Connect(processHostProtectionRemote)
+end
+
 pcall(function()
-    local mainEvent = ReplicatedStorage:WaitForChild("MainEvent", 20)
-    if not mainEvent then return end
-    mainEvent.OnClientEvent:Connect(function(...)
-        local args = { ... }
-        processHostProtectionShot(args[1], args[2])
-    end)
+    connectProtectionRemote(ReplicatedStorage:WaitForChild("MainEvent", 20))
+    connectProtectionRemote(ReplicatedStorage:FindFirstChild("UnreliableMainEvent"))
+end)
+
+ReplicatedStorage.ChildAdded:Connect(function(child)
+    if child.Name == "MainEvent" or child.Name == "UnreliableMainEvent" then
+        connectProtectionRemote(child)
+    end
 end)
 
 makeButton("Stand / Follow Me", 48, startStand)
@@ -1589,6 +1751,7 @@ local function executeCommand(speaker, msg)
         if state == true then
             isProtectionActive = true
             isProtection2Active = false
+            ensureProtectionShooterWatchers()
             status.Text = "Status: HOST PROTECTION ON"
         elseif state == false then
             isProtectionActive = false
@@ -1605,6 +1768,7 @@ local function executeCommand(speaker, msg)
         if state == true then
             isProtection2Active = true
             isProtectionActive = false
+            ensureProtectionShooterWatchers()
             status.Text = "Status: HOST PROTECTION2 ON (stomp)"
         elseif state == false then
             isProtection2Active = false
