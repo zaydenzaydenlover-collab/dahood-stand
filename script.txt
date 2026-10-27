@@ -384,7 +384,7 @@ end)
 local SilentAim = {
     Enabled = true,
     FOV = 350,
-    HitPart = "Head",
+    HitPart = "UpperTorso",
     MaxDistance = 1000,
     ShowFOV = true,
     FOVColor = Color3.fromRGB(0, 255, 140)
@@ -403,13 +403,23 @@ pcall(function()
     end
 end)
 
+local function getAimPart(char)
+    if not char then return nil end
+    local name = SilentAim.HitPart or "UpperTorso"
+    return char:FindFirstChild(name)
+        or char:FindFirstChild("UpperTorso")
+        or char:FindFirstChild("Torso")
+        or char:FindFirstChild("Head")
+        or char:FindFirstChild("HumanoidRootPart")
+end
+
 local function getBestSilentTarget()
     if not SilentAim.Enabled then return nil end
 
     if currentTarget and currentTarget.Character and not isWhitelisted(currentTarget) then
-        local char = currentTarget.Character
-        local hum = char:FindFirstChildOfClass("Humanoid")
-        local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+        local char = getChar(currentTarget) or currentTarget.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local head = char and getAimPart(char)
 
         if hum and hum.Health > 0 and head then
             local be = char:FindFirstChild("BodyEffects")
@@ -432,10 +442,10 @@ local function getBestSilentTarget()
     local players = Players:GetPlayers()
     for i = 1, #players do
         local player = players[i]
-        if player ~= LocalPlayer and not isWhitelisted(player) and player.Character then
-            local char = player.Character
-            local hum = char:FindFirstChildOfClass("Humanoid")
-            local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+        if player ~= LocalPlayer and not isWhitelisted(player) then
+            local char = getChar(player) or player.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local head = char and getAimPart(char)
 
             if hum and hum.Health > 0 and head then
                 local worldDist = (head.Position - localHrp.Position).Magnitude
@@ -1558,7 +1568,7 @@ RunService.RenderStepped:Connect(function()
         local targetChar = getChar(currentTarget) or currentTarget.Character
         local targetHum = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
         local targetHrp = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
-        local targetHead = targetChar and (targetChar:FindFirstChild("Head") or targetHrp)
+        local targetHead = targetChar and (getAimPart(targetChar) or targetHrp)
 
         if isGuardActive and not isManualTarget and targetChar and isCharacterKnocked(targetChar) then
             currentTarget = nil
