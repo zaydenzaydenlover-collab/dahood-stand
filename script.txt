@@ -1736,22 +1736,57 @@ local function findShooterFromShootPayload(payload)
     return nil
 end
 
+local function getHostBodyEffectsHealthValue(hostChar)
+    if not hostChar then return nil end
+    local be = hostChar:FindFirstChild("BodyEffects")
+    if not be then return nil end
+    local hv = be:FindFirstChild("Health")
+    if hv and (hv:IsA("NumberValue") or hv:IsA("IntValue")) then
+        return hv
+    end
+    return nil
+end
+
+local function readHostTrackedHealth(hostChar)
+    local hv = getHostBodyEffectsHealthValue(hostChar)
+    if hv then return hv.Value end
+    local hum = hostChar:FindFirstChildOfClass("Humanoid")
+    if hum then return hum.Health end
+    return nil
+end
+
+local function onHostHealthDrop(hostChar, lastVal, newVal)
+    if not lastVal or not newVal or newVal >= lastVal - 0.01 then return end
+    hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
+    protDebugLog(string.format("host health drop %.0f -> %.0f", lastVal, newVal))
+    tryHostProtectionRetaliation(hostChar)
+end
+
 local function scanHostBodyEffectsForDamage(hostChar)
     if not hostChar then return false end
     local be = hostChar:FindFirstChild("BodyEffects")
     if not be then return false end
     local snap = lastHostBodyEffectSnap[hostChar] or {}
     local changed = false
+    local healthDropped = false
     for _, child in ipairs(be:GetChildren()) do
         if child:IsA("BoolValue") or child:IsA("IntValue") or child:IsA("NumberValue") then
             local prev = snap[child.Name]
             if prev ~= nil and prev ~= child.Value then
                 changed = true
+                if child.Name == "Health" and child.Value < prev - 0.01 then
+                    healthDropped = true
+                end
             end
             snap[child.Name] = child.Value
         end
     end
     lastHostBodyEffectSnap[hostChar] = snap
+    if healthDropped then
+        hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
+        tryHostProtectionRetaliation(hostChar)
+        return true
+    end
     return changed
 end
 
@@ -1764,6 +1799,13 @@ local function tryHostProtectionRetaliation(hostChar)
     if not attacker then
         local hostHrp = hostChar:FindFirstChild("HumanoidRootPart")
         attacker = findLikelyShooterAtHost(hostHrp, host)
+    end
+    if not attacker and tick() <= hostDamagePulseUntil then
+        local hostHrp = hostChar:FindFirstChild("HumanoidRootPart")
+        attacker = findClosestArmedThreat(host, hostHrp)
+        if attacker then
+            protDebugLog("armed threat fallback -> " .. attacker.Name)
+        end
     end
     if not attacker then return end
     engageHostProtectionTarget(attacker, isProtection2Active)
@@ -1842,27 +1884,41 @@ local function bindHostProtectionCharacter(hostChar)
             part.Touched:Connect(onHostTouched)
         end
     end
+    lastHostProtectionHealth[hostChar] = readHostTrackedHealth(hostChar)
     local hum = hostChar:FindFirstChildOfClass("Humanoid")
     if hum then
-        lastHostProtectionHealth[hostChar] = hum.Health
         hum.HealthChanged:Connect(function(newHealth)
+            if getHostBodyEffectsHealthValue(hostChar) then return end
             local last = lastHostProtectionHealth[hostChar]
-            if last and newHealth < last - 0.25 then
-                tryHostProtectionRetaliation(hostChar)
-            end
+            onHostHealthDrop(hostChar, last, newHealth)
             lastHostProtectionHealth[hostChar] = newHealth
         end)
     end
     task.spawn(function()
         local be = hostChar:WaitForChild("BodyEffects", 12)
         if not be then return end
-        be.ChildAdded:Connect(function()
+        local hv = getHostBodyEffectsHealthValue(hostChar)
+        if hv then
+            lastHostProtectionHealth[hostChar] = hv.Value
+            for _, key in ipairs({ "Health", "Health_CLIENT" }) do
+                local node = be:FindFirstChild(key)
+                if node and (node:IsA("NumberValue") or node:IsA("IntValue")) then
+                    node.Changed:Connect(function(newVal)
+                        if not isProtectionActive and not isProtection2Active then return end
+                        local last = lastHostProtectionHealth[hostChar]
+                        onHostHealthDrop(hostChar, last, newVal)
+                        lastHostProtectionHealth[hostChar] = newVal
+                    end)
+                end
+            end
+        end
+        be.ChildAdded:Connect(function(child)
             if isProtectionActive or isProtection2Active then
                 tryHostProtectionRetaliation(hostChar)
             end
         end)
         for _, child in ipairs(be:GetChildren()) do
-            if child:IsA("ValueBase") then
+            if child:IsA("ValueBase") and child.Name ~= "Health" and child.Name ~= "Health_CLIENT" then
                 child.Changed:Connect(function()
                     if isProtectionActive or isProtection2Active then
                         tryHostProtectionRetaliation(hostChar)
@@ -1870,6 +1926,7 @@ local function bindHostProtectionCharacter(hostChar)
                 end)
             end
         end
+        scanHostBodyEffectsForDamage(hostChar)
     end)
 end
 
@@ -1895,14 +1952,13 @@ RunService.Heartbeat:Connect(function()
     if not host and #getProtectionHostModels() < 1 then return end
     for _, hostChar in ipairs(getProtectionHostModels()) do
         if isProtectionHostCharacter(hostChar) then
-            local hum = hostChar:FindFirstChildOfClass("Humanoid")
-            if hum then
+            local cur = readHostTrackedHealth(hostChar)
+            if cur then
                 local last = lastHostProtectionHealth[hostChar]
-                if last and hum.Health < last - 0.01 then
-                    hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
-                    tryHostProtectionRetaliation(hostChar)
+                if last then
+                    onHostHealthDrop(hostChar, last, cur)
                 end
-                lastHostProtectionHealth[hostChar] = hum.Health
+                lastHostProtectionHealth[hostChar] = cur
             end
             if scanHostBodyEffectsForDamage(hostChar) then
                 hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
@@ -1923,8 +1979,8 @@ RunService.Heartbeat:Connect(function()
             local models = getProtectionHostModels()
             local hp = "?"
             if #models > 0 then
-                local hum = models[1]:FindFirstChildOfClass("Humanoid")
-                if hum then hp = tostring(math.floor(hum.Health)) end
+                local tracked = readHostTrackedHealth(models[1])
+                if tracked then hp = tostring(math.floor(tracked)) end
             end
             protDebugLog(string.format(
                 "on=%s on2=%s host=%s models=%d hp=%s retaliating=%s",
