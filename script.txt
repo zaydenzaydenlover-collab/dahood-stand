@@ -70,6 +70,8 @@ local protectionShooterWatchBound = {}
 local protectionLastShotTime = {}
 local PROTECTION_RETALIATE_COOLDOWN = 1.25
 local PROTECTION_SHOT_WINDOW = 1.1
+local lastProtectionRelayTick = 0
+local lastHostBodyEffectSnap = {}
 local isGlueFollowActive = true
 local glueDesync = false
 local glueSpot = nil
@@ -163,6 +165,21 @@ local function getChar(player)
         end
     end
     return player.Character
+end
+
+local function getAllCharModels(player)
+    if not player then return {} end
+    local list = {}
+    local seen = {}
+    local function add(m)
+        if m and not seen[m] then
+            seen[m] = true
+            list[#list + 1] = m
+        end
+    end
+    add(getChar(player))
+    add(player.Character)
+    return list
 end
 
 task.spawn(function()
@@ -1331,16 +1348,16 @@ local function bindProtectionShooterWatch(player)
             hookProtectionShooterTool(player, child)
         end)
     end
-    local char = getChar(player)
-    if char then onChar(char) end
+    for _, char in ipairs(getAllCharModels(player)) do
+        onChar(char)
+    end
     player.CharacterAdded:Connect(function(c)
         onChar(c)
     end)
     task.spawn(function()
         while player.Parent and not isUnloaded do
-            local hoodChar = getChar(player)
-            if hoodChar then
-                onChar(hoodChar)
+            for _, char in ipairs(getAllCharModels(player)) do
+                onChar(char)
             end
             task.wait(0.8)
         end
@@ -1528,6 +1545,50 @@ local function findShooterFromShootPayload(payload)
     return nil
 end
 
+local function relayHostHitToArmy(attacker)
+    if not attacker then return end
+    local host = getLeader()
+    if not host or LocalPlayer ~= host then return end
+    local now = tick()
+    if now - lastProtectionRelayTick < 1.4 then return end
+    lastProtectionRelayTick = now
+    local cmd = (isProtection2Active and (".stomp " .. attacker.Name) or (".k " .. attacker.Name))
+    pcall(function()
+        local chatFolder = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+        local say = chatFolder and chatFolder:FindFirstChild("SayMessageRequest")
+        if say then
+            say:FireServer(cmd, "All")
+        end
+    end)
+    pcall(function()
+        for _, channel in ipairs(TextChatService:GetTextChannels()) do
+            if channel.Name == "RBXGeneral" or channel.Name == "All" or channel.Name == "General" then
+                channel:SendAsync(cmd)
+                break
+            end
+        end
+    end)
+end
+
+local function scanHostBodyEffectsForDamage(hostChar)
+    if not hostChar then return false end
+    local be = hostChar:FindFirstChild("BodyEffects")
+    if not be then return false end
+    local snap = lastHostBodyEffectSnap[hostChar] or {}
+    local changed = false
+    for _, child in ipairs(be:GetChildren()) do
+        if child:IsA("BoolValue") or child:IsA("IntValue") or child:IsA("NumberValue") then
+            local prev = snap[child.Name]
+            if prev ~= nil and prev ~= child.Value then
+                changed = true
+            end
+            snap[child.Name] = child.Value
+        end
+    end
+    lastHostBodyEffectSnap[hostChar] = snap
+    return changed
+end
+
 local function tryHostProtectionRetaliation(hostChar)
     if not isProtectionActive and not isProtection2Active then return end
     if isUnloaded or isHiding or isLoopkill then return end
@@ -1538,9 +1599,12 @@ local function tryHostProtectionRetaliation(hostChar)
         local hostHrp = hostChar:FindFirstChild("HumanoidRootPart")
         attacker = findLikelyShooterAtHost(hostHrp, host)
     end
-    if attacker then
-        engageHostProtectionTarget(attacker, isProtection2Active)
+    if not attacker then return end
+    if LocalPlayer == host then
+        relayHostHitToArmy(attacker)
+        return
     end
+    engageHostProtectionTarget(attacker, isProtection2Active)
 end
 
 local function processHostProtectionShot(cmd, payload)
@@ -1580,6 +1644,21 @@ local function bindHostProtectionCharacter(hostChar)
     if not hostChar or hostProtectionBound[hostChar] then return end
     hostProtectionBound[hostChar] = true
     local host = getLeader()
+    local special = hostChar:FindFirstChild("SpecialParts")
+    if special then
+        for _, part in ipairs(special:GetChildren()) do
+            if part:IsA("BasePart") then
+                part.Touched:Connect(function(hit)
+                    if not isProtectionActive and not isProtection2Active then return end
+                    if isUnloaded or isHiding or isLoopkill then return end
+                    local toucher = getPlayerFromTouchPart(hit)
+                    if toucher and host and toucher ~= host then
+                        engageHostProtectionTarget(toucher, isProtection2Active)
+                    end
+                end)
+            end
+        end
+    end
     local function onHostTouched(hit)
         if not isProtectionActive and not isProtection2Active then return end
         if isUnloaded or isHiding or isLoopkill then return end
@@ -1638,8 +1717,7 @@ task.spawn(function()
             ensureProtectionShooterWatchers()
             local host = getLeader()
             if host then
-                local hostChar = getChar(host)
-                if hostChar then
+                for _, hostChar in ipairs(getAllCharModels(host)) do
                     bindHostProtectionCharacter(hostChar)
                 end
             end
@@ -1653,19 +1731,26 @@ RunService.Heartbeat:Connect(function()
     if isUnloaded or isHiding or isLoopkill then return end
     local host = getLeader()
     if not host then return end
-    local hostChar = getChar(host)
-    if not hostChar then return end
-    local hum = hostChar:FindFirstChildOfClass("Humanoid")
-    if hum then
-        local last = lastHostProtectionHealth[hostChar]
-        if last and hum.Health < last - 0.01 then
+    for _, hostChar in ipairs(getAllCharModels(host)) do
+        local hum = hostChar:FindFirstChildOfClass("Humanoid")
+        if hum then
+            local last = lastHostProtectionHealth[hostChar]
+            if last and hum.Health < last - 0.01 then
+                tryHostProtectionRetaliation(hostChar)
+            end
+            lastHostProtectionHealth[hostChar] = hum.Health
+        end
+        if scanHostBodyEffectsForDamage(hostChar) then
             tryHostProtectionRetaliation(hostChar)
         end
-        lastHostProtectionHealth[hostChar] = hum.Health
-    end
-    local beAttacker = getAttackerFromBodyEffects(hostChar)
-    if beAttacker then
-        engageHostProtectionTarget(beAttacker, isProtection2Active)
+        local beAttacker = getAttackerFromBodyEffects(hostChar)
+        if beAttacker then
+            if LocalPlayer == host then
+                relayHostHitToArmy(beAttacker)
+            else
+                engageHostProtectionTarget(beAttacker, isProtection2Active)
+            end
+        end
     end
 end)
 
