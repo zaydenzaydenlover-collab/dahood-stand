@@ -228,6 +228,19 @@ local function isCharacterKnocked(char)
     return false
 end
 
+local function getCharCombatHealth(char)
+    if not char then return 0 end
+    local be = char:FindFirstChild("BodyEffects")
+    if be then
+        local hv = be:FindFirstChild("Health")
+        if hv and (hv:IsA("NumberValue") or hv:IsA("IntValue")) then
+            return hv.Value
+        end
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    return hum and hum.Health or 0
+end
+
 local ownerPlayer = findPlayer(OWNER_NAME)
 local grantedUser = nil
 
@@ -1558,7 +1571,7 @@ end
 
 local function findClosestArmedThreat(host, hostHrp)
     if not hostHrp then return nil end
-    local bestPlayer, bestDist = nil, 130
+    local bestPlayer, bestDist = nil, 220
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= host and not isWhitelisted(p) then
             local pChar = getChar(p)
@@ -1617,7 +1630,7 @@ local function findLikelyShooterAtHost(hostHrp, hostPlayer)
             local pChar = getChar(p)
             local pHrp = pChar and pChar:FindFirstChild("HumanoidRootPart")
             local pHum = pChar and pChar:FindFirstChildOfClass("Humanoid")
-            if pHrp and pHum and pHum.Health > 0 then
+            if pHrp and getCharCombatHealth(pChar) > 0 then
                 local dist = (pHrp.Position - hostPos).Magnitude
                 if dist <= 280 then
                     local toHost = hostPos - pHrp.Position
@@ -1631,7 +1644,12 @@ local function findLikelyShooterAtHost(hostHrp, hostPlayer)
                             local tool = pChar:FindFirstChildOfClass("Tool")
                             local hasGun = isCombatTool(tool)
                             local score = aimDot + (hasGun and 0.75 or 0) - (dist / 400)
-                            if (hasGun and aimDot > 0.12) or aimDot > 0.45 then
+                            if ownerRecentlyDamaged() and hasGun and dist <= 120 then
+                                if score > bestScore then
+                                    bestScore = score
+                                    bestPlayer = p
+                                end
+                            elseif (hasGun and aimDot > 0.12) or aimDot > 0.45 then
                                 if score > bestScore then
                                     bestScore = score
                                     bestPlayer = p
@@ -1685,6 +1703,11 @@ local function engageHostProtectionTarget(attacker, withStomp, fromOwnerTouch)
     isHiding = false
     formationMode = "none"
     isGlueFollowActive = true
+    if not currentWeapon then
+        currentWeapon = "Revolver"
+        attackSubMode = "combat"
+    end
+    task.defer(function() equipTool(currentWeapon or "Revolver") end)
     if withStomp then
         isStomping = true
         stompTargetName = attacker.Name
@@ -1698,6 +1721,33 @@ local function engageHostProtectionTarget(attacker, withStomp, fromOwnerTouch)
             status.Text = "Status: HOST PROT -> " .. attacker.Name
         end
     end
+    print("[Stando] Protect owner -> " .. attacker.Name)
+end
+
+local function tryHostProtectionRetaliation(hostChar)
+    if not isProtectionActive and not isProtection2Active then return end
+    if isUnloaded or isHiding or isLoopkill then return end
+    local host = getProtectionHost()
+    if not host or not hostChar or not isProtectionHostCharacter(hostChar) then return end
+    local hostHrp = hostChar:FindFirstChild("HumanoidRootPart")
+    local attacker = getRecentProtectionShooter(host)
+    if not attacker then
+        attacker = getAttackerFromBodyEffects(hostChar)
+    end
+    if not attacker then
+        attacker = findLikelyShooterAtHost(hostHrp, host)
+    end
+    if not attacker then
+        attacker = findClosestArmedThreat(host, hostHrp)
+        if attacker then
+            protDebugLog("armed threat fallback -> " .. attacker.Name)
+        end
+    end
+    if not attacker then
+        protDebugLog("owner hurt but no attacker found")
+        return
+    end
+    engageHostProtectionTarget(attacker, isProtection2Active, true)
 end
 
 local function hostWasHitInShootPayload(payload)
@@ -1765,6 +1815,7 @@ local function onHostHealthDrop(hostChar, lastVal, newVal)
     if not lastVal or not newVal or newVal >= lastVal - 0.01 then return end
     ownerLastHealthDropTime = tick()
     hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
+    print(string.format("[Stando] Owner health %.0f -> %.0f", lastVal, newVal))
     protDebugLog(string.format("owner health drop %.0f -> %.0f", lastVal, newVal))
     tryHostProtectionRetaliation(hostChar)
 end
@@ -1791,27 +1842,6 @@ local function scanHostBodyEffectsForDamage(hostChar)
     end
     lastHostBodyEffectSnap[hostChar] = snap
     return healthDropped
-end
-
-local function tryHostProtectionRetaliation(hostChar)
-    if not isProtectionActive and not isProtection2Active then return end
-    if isUnloaded or isHiding or isLoopkill then return end
-    local host = getProtectionHost()
-    if not host or not hostChar or not isProtectionHostCharacter(hostChar) then return end
-    local attacker = getAttackerFromBodyEffects(hostChar)
-    if not attacker then
-        local hostHrp = hostChar:FindFirstChild("HumanoidRootPart")
-        attacker = findLikelyShooterAtHost(hostHrp, host)
-    end
-    if not attacker and tick() <= hostDamagePulseUntil then
-        local hostHrp = hostChar:FindFirstChild("HumanoidRootPart")
-        attacker = findClosestArmedThreat(host, hostHrp)
-        if attacker then
-            protDebugLog("armed threat fallback -> " .. attacker.Name)
-        end
-    end
-    if not attacker then return end
-    engageHostProtectionTarget(attacker, isProtection2Active, false)
 end
 
 local function processHostProtectionShot(cmd, payload)
@@ -2406,13 +2436,11 @@ RunService.RenderStepped:Connect(function()
             return
         end
 
-        if not targetChar or not targetHum or targetHum.Health <= 0 or not targetHrp or not targetHead then
-            if isLoopkill then
-                return
-            elseif isProtectionRetaliating and (isProtectionActive or isProtection2Active) then
-                clearProtectionRetaliation(isProtection2Active and "Status: HOST PROTECTION2 ON" or "Status: HOST PROTECTION ON")
-                return
-            elseif not isManualTarget and not isGuardActive and not isStomping then
+        local targetDown = targetChar and (getCharCombatHealth(targetChar) <= 0 or isCharacterKnocked(targetChar))
+        if not targetChar or not targetHrp or not targetHead then
+            if isProtectionRetaliating then return end
+            if isLoopkill then return end
+            if not isManualTarget and not isGuardActive and not isStomping then
                 currentTarget = nil
                 isOrbiting = false
                 isFollowing = true
@@ -2424,6 +2452,19 @@ RunService.RenderStepped:Connect(function()
                 return
             elseif not isStomping then
                 fullStopAndReturn()
+                return
+            end
+        end
+        if targetDown and not isStomping then
+            if isLoopkill then return end
+            if isProtectionRetaliating and isProtectionActive and not isProtection2Active then
+                clearProtectionRetaliation("Status: HOST PROTECTION ON")
+                return
+            end
+            if not isManualTarget and not isGuardActive then
+                currentTarget = nil
+                isOrbiting = false
+                isFollowing = true
                 return
             end
         end
