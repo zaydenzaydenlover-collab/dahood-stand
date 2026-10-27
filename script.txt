@@ -155,16 +155,32 @@ local function findPlayer(nameQuery)
     return nil
 end
 
-local function getChar(player)
+local function getHoodCharacterFolder()
+    local root = workspace:FindFirstChild("Players")
+    return root and root:FindFirstChild("Characters")
+end
+
+local function findHoodModelForPlayer(player)
     if not player then return nil end
-    local folder = workspace:FindFirstChild("Players")
-    folder = folder and folder:FindFirstChild("Characters")
-    if folder then
-        local hood = folder:FindFirstChild(player.Name)
-        if hood and hood:FindFirstChild("HumanoidRootPart") then
-            return hood
+    local folder = getHoodCharacterFolder()
+    if not folder then return nil end
+    local hood = folder:FindFirstChild(player.Name)
+    if hood and hood:FindFirstChild("HumanoidRootPart") then
+        return hood
+    end
+    local nameLower = string.lower(player.Name)
+    for _, child in ipairs(folder:GetChildren()) do
+        if string.lower(child.Name) == nameLower and child:FindFirstChild("HumanoidRootPart") then
+            return child
         end
     end
+    return nil
+end
+
+local function getChar(player)
+    if not player then return nil end
+    local hood = findHoodModelForPlayer(player)
+    if hood then return hood end
     return player.Character
 end
 
@@ -245,14 +261,82 @@ local function getProtectionHost()
     return ownerPlayer
 end
 
-local function isProtectionHostCharacter(char)
+local function getProtectionHostModels()
+    local models = {}
+    local seen = {}
+    local function add(m)
+        if m and not seen[m] then
+            seen[m] = true
+            models[#models + 1] = m
+        end
+    end
     local host = getProtectionHost()
-    if not host or not char then return false end
-    for _, model in ipairs(getAllCharModels(host)) do
+    if host then
+        for _, m in ipairs(getAllCharModels(host)) do
+            add(m)
+        end
+    end
+    local folder = getHoodCharacterFolder()
+    if folder then
+        local ownerLower = string.lower(OWNER_NAME)
+        for _, child in ipairs(folder:GetChildren()) do
+            if string.lower(child.Name) == ownerLower and child:FindFirstChild("HumanoidRootPart") then
+                add(child)
+            elseif host and string.lower(child.Name) == string.lower(host.Name) and child:FindFirstChild("HumanoidRootPart") then
+                add(child)
+            end
+        end
+    end
+    return models
+end
+
+local function isProtectionHostCharacter(char)
+    if not char then return false end
+    for _, model in ipairs(getProtectionHostModels()) do
         if model == char then return true end
     end
     return false
 end
+
+local function getProtectionHostRoot()
+    for _, model in ipairs(getProtectionHostModels()) do
+        local hrp = model:FindFirstChild("HumanoidRootPart")
+        if hrp then return hrp end
+    end
+    return nil
+end
+
+local function shooterAimHitsProtectionHost(shooterPlayer)
+    local hostRoot = getProtectionHostRoot()
+    if not hostRoot or not shooterPlayer then return false end
+    local shooterChar = getChar(shooterPlayer)
+    if not shooterChar then return false end
+    local tool = shooterChar:FindFirstChildOfClass("Tool")
+    local handle = tool and tool:FindFirstChild("Handle")
+    local originPart = handle or shooterChar:FindFirstChild("Head") or shooterChar:FindFirstChild("HumanoidRootPart")
+    if not originPart then return false end
+    local origin = originPart.Position
+    local toHost = hostRoot.Position - origin
+    if toHost.Magnitude < 0.05 then return true end
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { shooterChar }
+    params.IgnoreWater = true
+    local result = workspace:Raycast(origin, toHost.Unit * math.min(toHost.Magnitude + 4, 900), params)
+    if not result or not result.Instance then return false end
+    for _, hostModel in ipairs(getProtectionHostModels()) do
+        if result.Instance:IsDescendantOf(hostModel) then
+            return true
+        end
+    end
+    return false
+end
+
+Players.PlayerAdded:Connect(function(p)
+    if string.lower(p.Name) == string.lower(OWNER_NAME) or string.lower(p.DisplayName) == string.lower(OWNER_NAME) then
+        ownerPlayer = p
+    end
+end)
 
 local thisoneissocoldww = Instance.new("ScreenGui")
 thisoneissocoldww.Name = "thisoneissocoldww"
@@ -1291,10 +1375,12 @@ local function modelBelongsToPlayer(model, player)
     if player.Character == model then return true end
     local hoodChar = getChar(player)
     if hoodChar == model then return true end
-    if string.lower(model.Name) == string.lower(player.Name) then
-        local chars = workspace:FindFirstChild("Players")
-        chars = chars and chars:FindFirstChild("Characters")
-        if chars and model.Parent == chars then return true end
+    if string.lower(model.Name) == string.lower(player.Name) then return true end
+    if string.lower(model.Name) == string.lower(OWNER_NAME) and player == getProtectionHost() then return true end
+    local folder = getHoodCharacterFolder()
+    if folder and model.Parent == folder then
+        if player == getProtectionHost() then return true end
+        if string.lower(model.Name) == string.lower(OWNER_NAME) then return true end
     end
     return false
 end
@@ -1471,6 +1557,12 @@ local function pollAllPlayerAmmoForShots()
                             local cur = ammo.Value
                             if prev ~= nil and cur < prev then
                                 markProtectionShooter(p)
+                                if isProtectionActive or isProtection2Active then
+                                    if shooterAimHitsProtectionHost(p) then
+                                        hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
+                                        engageHostProtectionTarget(p, isProtection2Active)
+                                    end
+                                end
                             end
                             protectionAmmoPoll[child] = cur
                         end
@@ -1482,6 +1574,9 @@ local function pollAllPlayerAmmoForShots()
 end
 
 local function findLikelyShooterAtHost(hostHrp, hostPlayer)
+    if not hostHrp then
+        hostHrp = getProtectionHostRoot()
+    end
     if not hostHrp then return nil end
     local recent = getRecentProtectionShooter(hostPlayer)
     if recent then return recent end
@@ -1752,11 +1847,9 @@ task.spawn(function()
     while not isUnloaded do
         if isProtectionActive or isProtection2Active then
             ensureProtectionShooterWatchers()
-            local host = getProtectionHost()
-            if host then
-                for _, hostChar in ipairs(getAllCharModels(host)) do
-                    bindHostProtectionCharacter(hostChar)
-                end
+            getProtectionHost()
+            for _, hostChar in ipairs(getProtectionHostModels()) do
+                bindHostProtectionCharacter(hostChar)
             end
         end
         task.wait(0.45)
@@ -1768,8 +1861,8 @@ RunService.Heartbeat:Connect(function()
     if isUnloaded or isHiding or isLoopkill then return end
     pollAllPlayerAmmoForShots()
     local host = getProtectionHost()
-    if not host then return end
-    for _, hostChar in ipairs(getAllCharModels(host)) do
+    if not host and #getProtectionHostModels() < 1 then return end
+    for _, hostChar in ipairs(getProtectionHostModels()) do
         if isProtectionHostCharacter(hostChar) then
             local hum = hostChar:FindFirstChildOfClass("Humanoid")
             if hum then
