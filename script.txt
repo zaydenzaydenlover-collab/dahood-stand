@@ -364,8 +364,10 @@ local BRING_ARRIVE_DISTANCE = 8
 local bringLastGrabTick = 0
 local bringNoclipConn = nil
 local bringHostTpDone = false
-local isAntiStompActive = true
-local isGlueFollowActive = true
+local ANTI_STOMP_DEFAULT_ON = true
+local isAntiStompActive = ANTI_STOMP_DEFAULT_ON
+local GLUE_DEFAULT_ON = true
+local isGlueFollowActive = GLUE_DEFAULT_ON
 local glueSpot = nil
 local GLUE_RENDER_STEP = "StandoGlueFollow"
 local hitboxScaleSize = 30
@@ -2047,8 +2049,12 @@ end
 
 local function isGlueMovementActive()
     if not isGlueFollowActive or isBringing then return false end
-    if isOrbiting or isStomping or isLoopkill or isManualTarget then return true end
-    return isFollowing and not isHiding
+    if isOrbiting or isStomping or isLoopkill then return true end
+    if isManualTarget and currentTarget then return true end
+    if isGuardActive then return true end
+    if isFollowing and not isHiding then return true end
+    if isHiding and (isOrbiting or isStomping or isLoopkill or isGuardActive) then return true end
+    return false
 end
 
 local function getGlueCombatGoalCFrame(targetHead, altIndex, totalAlts)
@@ -2066,7 +2072,11 @@ local function refreshGlueSpot(myHrp, leaderHrp)
         local tChar = getChar(currentTarget)
         local head = tChar and (tChar:FindFirstChild("Head") or tChar:FindFirstChild("HumanoidRootPart"))
         if head then glueSpot = getGlueCombatGoalCFrame(head, altIndex, totalAlts) end
-    elseif leaderHrp and isFollowing and not isHiding then
+    elseif leaderHrp and (isFollowing or isGuardActive) then
+        if isHiding and not isGuardActive and not isOrbiting and not isStomping then
+            glueSpot = nil
+            return
+        end
         local offset = getFormationOffset(formationMode, altIndex, totalAlts)
         local leaderVel = leaderHrp.AssemblyLinearVelocity or Vector3.zero
         local predictTime = math.clamp(0.1 + leaderVel.Magnitude / 140, 0.1, 0.28)
@@ -2075,6 +2085,18 @@ local function refreshGlueSpot(myHrp, leaderHrp)
     else
         glueSpot = nil
     end
+end
+
+local function applyGlueToRoot()
+    if isUnloaded or not isGlueMovementActive() or not glueSpot then return end
+    local root = getMoveHrp(LocalPlayer)
+    if not root then return end
+    if sethiddenproperty then
+        pcall(function() sethiddenproperty(root, "PhysicsRepRootPart", root) end)
+    end
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+    root.CFrame = glueSpot
 end
 
 local function toggleGlueFollow()
@@ -2086,12 +2108,8 @@ local function toggleGlueFollow()
     if status then status.Text = "Glue follow: " .. (isGlueFollowActive and "ON" or "OFF") end
 end
 
-RunService:BindToRenderStep(GLUE_RENDER_STEP, Enum.RenderPriority.Camera.Value + 1, function()
-    if isUnloaded or not isGlueMovementActive() or not glueSpot then return end
-    local root = getMoveHrp(LocalPlayer)
-    if not root then return end
-    if sethiddenproperty then pcall(function() sethiddenproperty(root, "PhysicsRepRootPart", root) end) end
-    root.CFrame = glueSpot
+RunService:BindToRenderStep(GLUE_RENDER_STEP, Enum.RenderPriority.Camera.Value + 2, function()
+    applyGlueToRoot()
 end)
 
 makeButton("Stand / Follow Me", 48, startStand)
@@ -2129,10 +2147,10 @@ makeButton("Low GFX", 334, function()
 end)
 makeButton("Rejoin Server", 360, function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
 makeButton("Toggle Glue (.glue)", 360, toggleGlueFollow)
-makeButton("Anti Stomp (.as)", 386, function()
+makeButton("Anti Stomp (.as) [default ON]", 386, function()
     isAntiStompActive = not isAntiStompActive
     if isAntiStompActive then resetAntiStompSession() end
-    status.Text = "Anti Stomp: " .. (isAntiStompActive and "ON" or "OFF")
+    status.Text = "Anti Stomp: " .. (isAntiStompActive and "ON (default)" or "OFF")
 end)
 makeButton("Eject / Unload (.eject)", 412, ejectScript)
 makeButton("Toggle Menu View", 438, function() frame.Visible = not frame.Visible end)
@@ -2577,9 +2595,12 @@ RunService.RenderStepped:Connect(function()
             targetGoalCFrame = CFrame.new(targetPos + Vector3.new(0, 20, 0))
         end
 
-        if not (isGlueFollowActive and isGlueMovementActive()) then
+        refreshGlueSpot(myHrp, leaderHrp)
+        if not (isGlueFollowActive and isGlueMovementActive() and glueSpot) then
             myHrp.AssemblyLinearVelocity = Vector3.zero
             myHrp.CFrame = targetGoalCFrame
+        else
+            applyGlueToRoot()
         end
     else
         isKnifeMode = false
@@ -2612,6 +2633,7 @@ RunService.RenderStepped:Connect(function()
     end
 
     refreshGlueSpot(myHrp, leaderHrp)
+    applyGlueToRoot()
 
     if not isFollowing or (isHiding and not hideCombat) or isOrbiting then
         if isHiding and not (isOrbiting or isStomping or isLoopkill or isBringing or isGuardActive) then
@@ -2620,12 +2642,10 @@ RunService.RenderStepped:Connect(function()
         return
     end
 
-    if leaderHrp then
-        if not (isGlueFollowActive and isGlueMovementActive()) then
-            local altIndex, totalAlts = getAltIndex()
-            local offset = getFormationOffset(formationMode, altIndex, totalAlts)
-            applyFormationFollow(myHrp, leaderHrp, offset)
-        end
+    if leaderHrp and not (isGlueFollowActive and isGlueMovementActive()) then
+        local altIndex, totalAlts = getAltIndex()
+        local offset = getFormationOffset(formationMode, altIndex, totalAlts)
+        applyFormationFollow(myHrp, leaderHrp, offset)
     end
 end)
 
@@ -2671,8 +2691,27 @@ end)
 RunService.Heartbeat:Connect(function()
     if isUnloaded then return end
     pcall(runAntiStompTick)
+    if isGlueFollowActive then applyGlueToRoot() end
 end)
 
-print("[Stando] Loaded OK (full suite)")
+LocalPlayer.CharacterAdded:Connect(function()
+    task.defer(function()
+        if isGlueFollowActive then
+            clearGluePhysics(getMoveHrp(LocalPlayer))
+        end
+        if isAntiStompActive then
+            resetAntiStompSession()
+        end
+    end)
+end)
 
-print("[Stando] Script loaded OK")
+task.defer(function()
+    if isAntiStompActive then
+        resetAntiStompSession()
+    end
+    if status and status.Parent then
+        status.Text = "Status: FOLLOWING | glue ON | anti-stomp ON"
+    end
+end)
+
+print("[Stando] Loaded OK — glue + anti-stomp ON by default")
