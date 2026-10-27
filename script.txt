@@ -69,9 +69,10 @@ local lastHostProtectionHealth = {}
 local protectionShooterWatchBound = {}
 local protectionLastShotTime = {}
 local PROTECTION_RETALIATE_COOLDOWN = 1.25
-local PROTECTION_SHOT_WINDOW = 1.1
-local lastProtectionRelayTick = 0
+local PROTECTION_SHOT_WINDOW = 2.0
 local lastHostBodyEffectSnap = {}
+local protectionAmmoPoll = {}
+local hostDamagePulseUntil = 0
 local isGlueFollowActive = true
 local glueDesync = false
 local glueSpot = nil
@@ -1421,10 +1422,72 @@ local function isCombatTool(tool)
     return tool:FindFirstChild("Handle") ~= nil
 end
 
+local function findClosestArmedThreat(host, hostHrp)
+    if not hostHrp then return nil end
+    local bestPlayer, bestDist = nil, 130
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= host and not isWhitelisted(p) then
+            local pChar = getChar(p)
+            local pHrp = pChar and pChar:FindFirstChild("HumanoidRootPart")
+            local tool = pChar and pChar:FindFirstChildOfClass("Tool")
+            if pHrp and isCombatTool(tool) then
+                local d = (pHrp.Position - hostHrp.Position).Magnitude
+                if d < bestDist then
+                    bestDist = d
+                    bestPlayer = p
+                end
+            end
+        end
+    end
+    return bestPlayer
+end
+
+local function pollAllPlayerAmmoForShots()
+    local host = getLeader()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= host and not isWhitelisted(p) then
+            for _, char in ipairs(getAllCharModels(p)) do
+                for _, child in ipairs(char:GetChildren()) do
+                    if child:IsA("Tool") then
+                        local ammo = child:FindFirstChild("Ammo", true)
+                        if ammo and (ammo:IsA("IntValue") or ammo:IsA("NumberValue")) then
+                            local prev = protectionAmmoPoll[child]
+                            local cur = ammo.Value
+                            if prev ~= nil and cur < prev then
+                                markProtectionShooter(p)
+                                if isProtectionActive or isProtection2Active then
+                                    local hostChar = getChar(host)
+                                    local hostHrp = hostChar and hostChar:FindFirstChild("HumanoidRootPart")
+                                    local pHrp = char:FindFirstChild("HumanoidRootPart")
+                                    if hostHrp and pHrp then
+                                        local flatAim = Vector3.new(pHrp.CFrame.LookVector.X, 0, pHrp.CFrame.LookVector.Z)
+                                        local flatToHost = hostHrp.Position - pHrp.Position
+                                        flatToHost = Vector3.new(flatToHost.X, 0, flatToHost.Z)
+                                        if flatAim.Magnitude > 0.05 and flatToHost.Magnitude > 0.05 then
+                                            if flatAim.Unit:Dot(flatToHost.Unit) > 0.18 then
+                                                engageHostProtectionTarget(p, isProtection2Active)
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                            protectionAmmoPoll[child] = cur
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
 local function findLikelyShooterAtHost(hostHrp, hostPlayer)
     if not hostHrp then return nil end
     local recent = getRecentProtectionShooter(hostPlayer)
     if recent then return recent end
+    if tick() <= hostDamagePulseUntil then
+        local emergency = findClosestArmedThreat(hostPlayer, hostHrp)
+        if emergency then return emergency end
+    end
     local hostPos = hostHrp.Position
     local bestPlayer, bestScore = nil, -math.huge
     for _, p in ipairs(Players:GetPlayers()) do
@@ -1545,31 +1608,6 @@ local function findShooterFromShootPayload(payload)
     return nil
 end
 
-local function relayHostHitToArmy(attacker)
-    if not attacker then return end
-    local host = getLeader()
-    if not host or LocalPlayer ~= host then return end
-    local now = tick()
-    if now - lastProtectionRelayTick < 1.4 then return end
-    lastProtectionRelayTick = now
-    local cmd = (isProtection2Active and (".stomp " .. attacker.Name) or (".k " .. attacker.Name))
-    pcall(function()
-        local chatFolder = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
-        local say = chatFolder and chatFolder:FindFirstChild("SayMessageRequest")
-        if say then
-            say:FireServer(cmd, "All")
-        end
-    end)
-    pcall(function()
-        for _, channel in ipairs(TextChatService:GetTextChannels()) do
-            if channel.Name == "RBXGeneral" or channel.Name == "All" or channel.Name == "General" then
-                channel:SendAsync(cmd)
-                break
-            end
-        end
-    end)
-end
-
 local function scanHostBodyEffectsForDamage(hostChar)
     if not hostChar then return false end
     local be = hostChar:FindFirstChild("BodyEffects")
@@ -1600,10 +1638,7 @@ local function tryHostProtectionRetaliation(hostChar)
         attacker = findLikelyShooterAtHost(hostHrp, host)
     end
     if not attacker then return end
-    if LocalPlayer == host then
-        relayHostHitToArmy(attacker)
-        return
-    end
+    if LocalPlayer == host then return end
     engageHostProtectionTarget(attacker, isProtection2Active)
 end
 
@@ -1729,27 +1764,27 @@ end)
 RunService.Heartbeat:Connect(function()
     if not isProtectionActive and not isProtection2Active then return end
     if isUnloaded or isHiding or isLoopkill then return end
+    pollAllPlayerAmmoForShots()
     local host = getLeader()
     if not host then return end
+    if LocalPlayer == host then return end
     for _, hostChar in ipairs(getAllCharModels(host)) do
         local hum = hostChar:FindFirstChildOfClass("Humanoid")
         if hum then
             local last = lastHostProtectionHealth[hostChar]
             if last and hum.Health < last - 0.01 then
+                hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
                 tryHostProtectionRetaliation(hostChar)
             end
             lastHostProtectionHealth[hostChar] = hum.Health
         end
         if scanHostBodyEffectsForDamage(hostChar) then
+            hostDamagePulseUntil = tick() + PROTECTION_SHOT_WINDOW
             tryHostProtectionRetaliation(hostChar)
         end
         local beAttacker = getAttackerFromBodyEffects(hostChar)
         if beAttacker then
-            if LocalPlayer == host then
-                relayHostHitToArmy(beAttacker)
-            else
-                engageHostProtectionTarget(beAttacker, isProtection2Active)
-            end
+            engageHostProtectionTarget(beAttacker, isProtection2Active)
         end
     end
 end)
