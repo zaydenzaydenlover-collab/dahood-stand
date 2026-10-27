@@ -384,7 +384,7 @@ end)
 local SilentAim = {
     Enabled = true,
     FOV = 350,
-    HitPart = "UpperTorso",
+    HitPart = "HumanoidRootPart",
     MaxDistance = 1000,
     ShowFOV = true,
     FOVColor = Color3.fromRGB(0, 255, 140)
@@ -405,12 +405,11 @@ end)
 
 local function getAimPart(char)
     if not char then return nil end
-    local name = SilentAim.HitPart or "UpperTorso"
+    local name = SilentAim.HitPart or "HumanoidRootPart"
     return char:FindFirstChild(name)
-        or char:FindFirstChild("UpperTorso")
         or char:FindFirstChild("Torso")
-        or char:FindFirstChild("Head")
         or char:FindFirstChild("HumanoidRootPart")
+        or char:FindFirstChild("UpperTorso")
 end
 
 local function getBestSilentTarget()
