@@ -7,15 +7,18 @@ repeat task.wait() until _bootLp.Character or (function()
     return folder and folder:FindFirstChild(_bootLp.Name)
 end)() or tick() - _bootStart > 45
 
-if getgenv().StandoUnload then pcall(getgenv().StandoUnload) end
+local genv = (getgenv and getgenv()) or _G
+if genv.StandoUnload then pcall(genv.StandoUnload) end
 
-if getgenv().AntiAfkExecuted and game.CoreGui:FindFirstChild("thisoneissocoldww") then 
-    getgenv().AntiAfkExecuted = false
-    getgenv().zamanbaslaticisi = false
-    game.CoreGui.thisoneissocoldww:Destroy()
+if genv.AntiAfkExecuted and game.CoreGui:FindFirstChild("thisoneissocoldww") then
+    genv.AntiAfkExecuted = false
+    genv.zamanbaslaticisi = false
+    pcall(function() game.CoreGui.thisoneissocoldww:Destroy() end)
 end
 
-getgenv().AntiAfkExecuted = true
+genv.AntiAfkExecuted = true
+
+local screenGui, frame, status
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -31,6 +34,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local OWNER_NAME = "dudasgoodpuppy9ghlhk"
 local isUnloaded = false
+local bringCancelToken = 0
 
 local WHITELISTED_USERS = {
     ["idan1235838"] = true,
@@ -77,90 +81,6 @@ local function findPlayer(nameQuery)
     end
     return nil
 end
-
-local function getHoodModel(player)
-    if not player then return nil end
-    local folder = workspace:FindFirstChild("Players")
-    folder = folder and folder:FindFirstChild("Characters")
-    local hood = folder and folder:FindFirstChild(player.Name)
-    if hood and hood:FindFirstChild("HumanoidRootPart") then return hood end
-    return nil
-end
-
-local function getChar(player)
-    if not player then return nil end
-    local pc = player.Character
-    if pc and pc:FindFirstChildOfClass("Humanoid") and pc:FindFirstChild("HumanoidRootPart") then
-        return pc
-    end
-    local hood = getHoodModel(player)
-    if hood then
-        if hood:FindFirstChildOfClass("Humanoid") then return hood end
-        if pc then return pc end
-        return hood
-    end
-    return pc
-end
-
-local function getMoveHrp(player)
-    local hood = getHoodModel(player)
-    if hood and hood:FindFirstChild("HumanoidRootPart") then return hood.HumanoidRootPart end
-    local pc = player and player.Character
-    return pc and pc:FindFirstChild("HumanoidRootPart")
-end
-
-local function getLocalHum()
-    local hood = getHoodModel(LocalPlayer)
-    local hoodHum = hood and hood:FindFirstChildOfClass("Humanoid")
-    if hoodHum then return hoodHum end
-    local pc = LocalPlayer.Character
-    return pc and pc:FindFirstChildOfClass("Humanoid")
-end
-
-local function isCharacterKnocked(char)
-    if not char then return true end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if hum and hum.Health <= 0 then return true end
-    local be = char:FindFirstChild("BodyEffects")
-    if be then
-        if be:FindFirstChild("K.O") and be["K.O"].Value == true then return true end
-        if be:FindFirstChild("Dead") and be.Dead.Value == true then return true end
-    end
-    return false
-end
-
-local lastRemoteStompTick = 0
-local function fireMainEventStomp()
-    local now = tick()
-    if now - lastRemoteStompTick < 0.14 then return end
-    lastRemoteStompTick = now
-    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
-    if mainEvent then pcall(function() mainEvent:FireServer("Stomp") end) end
-end
-
-local ownerPlayer = findPlayer(OWNER_NAME)
-local grantedUser = nil
-
-local function getLeader()
-    if grantedUser then
-        local gChar = getChar(grantedUser)
-        if gChar and gChar:FindFirstChild("HumanoidRootPart") then return grantedUser end
-    end
-    if not ownerPlayer then ownerPlayer = findPlayer(OWNER_NAME) end
-    if ownerPlayer then
-        local oChar = getChar(ownerPlayer)
-        if oChar and oChar:FindFirstChild("HumanoidRootPart") then return ownerPlayer end
-    end
-    return ownerPlayer
-end
-
-local function getLeaderHrp()
-    local leader = getLeader()
-    if not leader then return nil end
-    local c = getChar(leader)
-    return c and c:FindFirstChild("HumanoidRootPart")
-end
-
 -- ==========================================
 -- ANTI-AFK & BASE GUI
 -- ==========================================
@@ -204,7 +124,7 @@ DestroyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 DestroyButton.TextSize = 14.000
 
 DestroyButton.MouseButton1Click:Connect(function()
-    getgenv().AntiAfkExecuted = false
+    genv.AntiAfkExecuted = false
     task.wait(0.1)
     thisoneissocoldww:Destroy()
 end)
@@ -355,9 +275,9 @@ task.spawn(function()
 end)
 
 local saniye, dakika, saat = 0, 0, 0
-getgenv().zamanbaslaticisi = true
+genv.zamanbaslaticisi = true
 task.spawn(function()
-    while getgenv().zamanbaslaticisi do
+    while genv.zamanbaslaticisi do
         saniye = saniye + 1
         task.wait(1)
         if saniye >= 60 then saniye = 0; dakika = dakika + 1 end
@@ -368,16 +288,55 @@ task.spawn(function()
     end
 end)
 
--- ==========================================
--- STATE VARIABLES
--- ==========================================
+-- Stando panel (same order as old script: right after anti-AFK, before silent aim)
+do
+    local playerGui = LocalPlayer:WaitForChild("PlayerGui", 5)
+    if not playerGui then
+        playerGui = game:GetService("CoreGui")
+    end
+    if playerGui:FindFirstChild("StandoControlPanel") then
+        pcall(function() playerGui.StandoControlPanel:Destroy() end)
+    end
 
+    screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "StandoControlPanel"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = playerGui
+
+    frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0, 220, 0, 460)
+    frame.Position = UDim2.new(0.03, 0, 0.28, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+    frame.Active = true
+    pcall(function() frame.Draggable = true end)
+    frame.Parent = screenGui
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 25)
+    title.BackgroundTransparency = 1
+    title.Text = "STANDO PANEL [MASTER SUITE]"
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextSize = 12
+    title.Font = Enum.Font.SourceSansBold
+    title.Parent = frame
+
+    status = Instance.new("TextLabel")
+    status.Size = UDim2.new(1, 0, 0, 20)
+    status.Position = UDim2.new(0, 0, 0, 22)
+    status.BackgroundTransparency = 1
+    status.Text = "Status: FOLLOWING"
+    status.TextColor3 = Color3.fromRGB(100, 200, 255)
+    status.TextSize = 11
+    status.Font = Enum.Font.SourceSans
+    status.Parent = frame
+end
+
+-- State (declared early so the whole script can compile in strict executors)
 local currentTarget = nil
 local currentWeapon = nil
 local attackSubMode = "combat"
 local standPositionMode = "default"
 local formationMode = "none"
-
 local isOrbiting = false
 local isHiding = false
 local isFollowing = true
@@ -387,15 +346,525 @@ local isStomping = false
 local stompTargetName = nil
 local isManualTarget = false
 local isGuardActive = false
-
+local isProtectionActive = false
+local isProtection2Active = false
+local isProtectionRetaliating = false
+local protectionTouchCooldown = {}
+local lastProtectionHealth = nil
+local isBringing = false
+local bringTargetName = nil
+local bringPhase = "knock"
+local bringPhaseStarted = 0
+local bringGrabSent = false
+local bringDropSent = false
+local BRING_HOVER_GRAB_DELAY = 1.5
+local BRING_FLY_SMOOTH = 0.4
+local BRING_DROP_STUDS = 4.5
+local BRING_ARRIVE_DISTANCE = 8
+local bringLastGrabTick = 0
+local bringNoclipConn = nil
+local bringHostTpDone = false
+local isAntiStompActive = true
+local isGlueFollowActive = true
+local glueSpot = nil
+local GLUE_RENDER_STEP = "StandoGlueFollow"
 local hitboxScaleSize = 30
 local defaultHitboxSize = Vector3.new(2, 2, 1)
-
 local OWNER_PREDICTION_FACTOR = 0.12
+local TARGET_PREDICTION_FACTOR = 0.12
 local FORMATION_SPACING = 4.5
 local FORMATION_SMOOTH = 0.48
 local FORMATION_SNAP_DISTANCE = 35
-local TARGET_PREDICTION_FACTOR = 0.12
+local grantedUser = nil
+
+local function getHoodCharacterModel(player)
+    if not player then return nil end
+    local playersFolder = workspace:FindFirstChild("Players")
+    local charactersFolder = playersFolder and playersFolder:FindFirstChild("Characters")
+    if charactersFolder then
+        local hoodModel = charactersFolder:FindFirstChild(player.Name)
+        if hoodModel and hoodModel:FindFirstChild("HumanoidRootPart") then
+            return hoodModel
+        end
+    end
+    local char = player.Character
+    if char and char:FindFirstChild("HumanoidRootPart") then
+        return char
+    end
+    return char
+end
+
+local function getChar(player)
+    return getHoodCharacterModel(player)
+end
+
+local function getMoveHrp(player)
+    if not player then return nil end
+    local hood = workspace:FindFirstChild("Players")
+    hood = hood and hood:FindFirstChild("Characters")
+    hood = hood and hood:FindFirstChild(player.Name)
+    if hood and hood:FindFirstChild("HumanoidRootPart") then
+        return hood.HumanoidRootPart
+    end
+    local c = player.Character
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+
+local function getLocalHum()
+    local c = getChar(LocalPlayer)
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+
+local function collectLocalCharacterModels()
+    local list = {}
+    local seen = {}
+    local function add(model)
+        if model and model:FindFirstChild("HumanoidRootPart") and not seen[model] then
+            seen[model] = true
+            list[#list + 1] = model
+        end
+    end
+    add(getHoodCharacterModel(LocalPlayer))
+    add(LocalPlayer.Character)
+    return list
+end
+
+local function getBodyEffects(char, player)
+    if char then
+        local be = char:FindFirstChild("BodyEffects")
+        if be then return be end
+    end
+    if not player and char then
+        player = Players:GetPlayerFromCharacter(char)
+    end
+    if player then
+        local hoodModel = getHoodCharacterModel(player)
+        if hoodModel then
+            return hoodModel:FindFirstChild("BodyEffects")
+        end
+    end
+    return nil
+end
+
+local function isCharacterKnocked(char, player)
+    if not char and player then
+        char = getHoodCharacterModel(player)
+    end
+    if not char then return false end
+    if not player then
+        player = Players:GetPlayerFromCharacter(char)
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then return true end
+    local be = getBodyEffects(char, player)
+    if not be then return false end
+    if be:FindFirstChild("K.O") and be["K.O"].Value == true then return true end
+    if be:FindFirstChild("Dead") and be.Dead.Value == true then return true end
+    return false
+end
+
+local STOMP_ANIM_IDS = {
+    ["rbxassetid://2788292075"] = true,
+    ["rbxassetid://3172948973"] = true,
+    ["rbxassetid://3033717454"] = true,
+    ["rbxassetid://3493406987"] = true,
+    ["rbxassetid://5341755581"] = true,
+    ["rbxassetid://7009919364"] = true,
+}
+
+local hoodStompAnimation = nil
+task.defer(function()
+    pcall(function()
+        local animFolder = ReplicatedStorage:FindFirstChild("Animations")
+        if animFolder then
+            hoodStompAnimation = animFolder:FindFirstChild("Stomp")
+        end
+    end)
+end)
+
+local lastAntiStompForceTick = 0
+local antiStompFlickerRestore = nil
+local antiStompThreatSince = nil
+local antiStompEscapeUsed = false
+
+-- Hood Custom respawn: MainEvent "ResetCharacter" (UI respawn button)
+local function fireHoodResetCharacter()
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if mainEvent then
+        local ok = pcall(function() mainEvent:FireServer("ResetCharacter") end)
+        if ok then return true end
+    end
+    local flag = LocalPlayer:FindFirstChild("reset")
+    if flag and flag:IsA("BoolValue") then
+        pcall(function()
+            flag.Value = false
+            flag.Value = true
+        end)
+        return true
+    end
+    return false
+end
+
+local lastRequestKOTick = 0
+local antiStompKoSyncTick = 0
+
+local function fireMainEventRequestKOUpdate()
+    local now = tick()
+    if now - lastRequestKOTick < 0.1 then return end
+    lastRequestKOTick = now
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if mainEvent then
+        pcall(function() mainEvent:FireServer("RequestKOUpdate") end)
+    end
+end
+
+local function isHumKnockLikeState(hum)
+    if not hum then return false end
+    local state = hum:GetState()
+    return state == Enum.HumanoidStateType.FallingDown
+        or state == Enum.HumanoidStateType.Ragdoll
+        or state == Enum.HumanoidStateType.Physics
+end
+
+local function isBodyEffectsKnocked(be, hum)
+    if be then
+        local ko = be:FindFirstChild("K.O")
+        if ko and ko:IsA("BoolValue") and ko.Value == true then return true end
+        local dead = be:FindFirstChild("Dead")
+        if dead and dead:IsA("BoolValue") and dead.Value == true then return true end
+        local beHealth = be:FindFirstChild("Health")
+        if beHealth and beHealth:IsA("NumberValue") and beHealth.Value <= 0 then return true end
+        local beHealthClient = be:FindFirstChild("Health_CLIENT")
+        if beHealthClient and beHealthClient:IsA("NumberValue") and beHealthClient.Value <= 0 then return true end
+    end
+    if hum then
+        if hum.Health <= 0 then return true end
+        if hum.PlatformStand then return true end
+        if isHumKnockLikeState(hum) then return true end
+        if hum.Health > 0 and hum.Health <= 5 then return true end
+    end
+    return false
+end
+
+local function getLocalAntiStompCharacter()
+    local models = collectLocalCharacterModels()
+    for i = 1, #models do
+        local c = models[i]
+        local hum = c:FindFirstChildOfClass("Humanoid")
+        local be = c:FindFirstChild("BodyEffects") or getBodyEffects(c, LocalPlayer)
+        if isBodyEffectsKnocked(be, hum) then
+            return c, c:FindFirstChild("HumanoidRootPart"), hum, be
+        end
+    end
+    for i = 1, #models do
+        local c = models[i]
+        local hum = c:FindFirstChildOfClass("Humanoid")
+        if hum and (hum.PlatformStand or isHumKnockLikeState(hum)) then
+            local be = c:FindFirstChild("BodyEffects") or getBodyEffects(c, LocalPlayer)
+            return c, c:FindFirstChild("HumanoidRootPart"), hum, be
+        end
+    end
+    return nil, nil, nil, nil
+end
+
+local function isLocalKnockedForAntiStomp(char, myHum)
+    if char and myHum then
+        local be = char:FindFirstChild("BodyEffects") or getBodyEffects(char, LocalPlayer)
+        if isBodyEffectsKnocked(be, myHum) then return true end
+    end
+    local kChar = getLocalAntiStompCharacter()
+    return kChar ~= nil
+end
+
+local function isStompAnimationTrack(track)
+    if not track then return false end
+    if string.find(string.lower(track.Name), "stomp") then return true end
+    local anim = track.Animation
+    if not anim then return false end
+    if hoodStompAnimation and anim == hoodStompAnimation then return true end
+    if string.lower(anim.Name) == "stomp" then return true end
+    if STOMP_ANIM_IDS[anim.AnimationId] then return true end
+    return false
+end
+
+local function isPlayerPerformingStomp(player, myPos)
+    local pChar = player and getHoodCharacterModel(player)
+    if not pChar then return false end
+    local pHum = pChar:FindFirstChildOfClass("Humanoid")
+    local pHrp = pChar:FindFirstChild("HumanoidRootPart")
+    if not pHum or not pHrp then return false end
+
+    if (pHrp.Position - myPos).Magnitude > 10 then return false end
+
+    for _, track in ipairs(pHum:GetPlayingAnimationTracks()) do
+        if isStompAnimationTrack(track) then return true end
+    end
+
+    local pBe = getBodyEffects(pChar, player)
+    if pBe then
+        local attacking = pBe:FindFirstChild("Attacking")
+        if attacking and attacking:IsA("BoolValue") and attacking.Value == true then
+            if pHrp.Position.Y > myPos.Y + 0.5 then return true end
+        end
+    end
+
+    if pHrp.Position.Y > myPos.Y + 0.8 and (Vector3.new(pHrp.Position.X, 0, pHrp.Position.Z) - Vector3.new(myPos.X, 0, myPos.Z)).Magnitude <= 4.5 then
+        return true
+    end
+    return false
+end
+
+local ANTI_STOMP_NEAR_RANGE = 14
+
+local function isNearbyStompThreat(char, myHrp)
+    if not char or not myHrp then return false end
+    local torso = char:FindFirstChild("UpperTorso") or char:FindFirstChild("Torso") or myHrp
+    local myPos = torso.Position
+    local players = Players:GetPlayers()
+    for i = 1, #players do
+        local p = players[i]
+        if p ~= LocalPlayer then
+            local pChar = getHoodCharacterModel(p)
+            local pHrp = pChar and pChar:FindFirstChild("HumanoidRootPart")
+            if pHrp then
+                local dist = (pHrp.Position - myPos).Magnitude
+                if dist <= ANTI_STOMP_NEAR_RANGE then
+                    if isPlayerPerformingStomp(p, myPos) then return true end
+                    local flat = (Vector3.new(pHrp.Position.X, 0, pHrp.Position.Z) - Vector3.new(myPos.X, 0, myPos.Z)).Magnitude
+                    if flat <= 9 then return true end
+                    if pHrp.Position.Y > myPos.Y + 0.15 then return true end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function applyAntiStompVelocityFlicker(myHrp)
+    if not myHrp then return end
+    if antiStompFlickerRestore == nil then
+        antiStompFlickerRestore = myHrp.AssemblyLinearVelocity
+        myHrp.AssemblyLinearVelocity = Vector3.new(9999, 9999, 9999)
+    end
+end
+
+local function resetAntiStompSession()
+    antiStompThreatSince = nil
+    antiStompEscapeUsed = false
+    antiStompFlickerRestore = nil
+    lastAntiStompForceTick = 0
+end
+
+local function forceAntiStompRespawn(char, myHum)
+    local now = tick()
+    if now - lastAntiStompForceTick < 0.55 then return end
+    lastAntiStompForceTick = now
+
+    local be = char and (char:FindFirstChild("BodyEffects") or getBodyEffects(char, LocalPlayer))
+    if be then
+        pcall(function()
+            local canRespawn = be:FindFirstChild("CAN_RESPAWN")
+            if canRespawn and canRespawn:IsA("BoolValue") then canRespawn.Value = true end
+            local grabbed = be:FindFirstChild("Grabbed")
+            if grabbed then
+                if grabbed:IsA("ObjectValue") then grabbed.Value = nil
+                elseif grabbed:IsA("NumberValue") or grabbed:IsA("IntValue") then grabbed.Value = 0 end
+            end
+            local ko = be:FindFirstChild("K.O")
+            if ko and ko:IsA("BoolValue") then ko.Value = true end
+            local beHealth = be:FindFirstChild("Health")
+            if beHealth and beHealth:IsA("NumberValue") then beHealth.Value = 0 end
+        end)
+    end
+    if myHum then
+        pcall(function() myHum.Health = 0 end)
+    end
+    fireMainEventRequestKOUpdate()
+    fireHoodResetCharacter()
+end
+
+local function syncAllLocalRootsTo(hrp)
+    if not hrp then return end
+    for _, c in ipairs(collectLocalCharacterModels()) do
+        local other = c:FindFirstChild("HumanoidRootPart")
+        if other and other ~= hrp then
+            pcall(function()
+                other.CFrame = hrp.CFrame
+                other.AssemblyLinearVelocity = Vector3.zero
+                other.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+    end
+end
+
+local function runAntiStompTick()
+    if not isAntiStompActive then return end
+
+    local char, myHrp, myHum = getLocalAntiStompCharacter()
+    if not char or not myHrp or not myHum then
+        resetAntiStompSession()
+        return
+    end
+
+    if antiStompFlickerRestore ~= nil then
+        myHrp.AssemblyLinearVelocity = antiStompFlickerRestore
+        antiStompFlickerRestore = nil
+    end
+
+    local stompThreat = isNearbyStompThreat(char, myHrp)
+    if not stompThreat then
+        antiStompThreatSince = nil
+        if tick() - antiStompKoSyncTick >= 0.35 then
+            antiStompKoSyncTick = tick()
+            fireMainEventRequestKOUpdate()
+        end
+        return
+    end
+
+    if not antiStompThreatSince then
+        antiStompThreatSince = tick()
+    end
+
+    fireMainEventRequestKOUpdate()
+    applyAntiStompVelocityFlicker(myHrp)
+    pcall(function()
+        myHrp.CFrame = myHrp.CFrame + Vector3.new(0, 9, 0)
+        myHrp.AssemblyLinearVelocity = Vector3.zero
+        myHrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+    syncAllLocalRootsTo(myHrp)
+    forceAntiStompRespawn(char, myHum)
+end
+
+local function runAntiStomp(char, myHrp, myHum)
+    runAntiStompTick()
+end
+
+local lastRemoteStompTick = 0
+local lastGrabRemoteTick = 0
+
+local function fireMainEventStomp()
+    local now = tick()
+    if now - lastRemoteStompTick < 0.14 then return end
+    lastRemoteStompTick = now
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if mainEvent then
+        pcall(function() mainEvent:FireServer("Stomp") end)
+    end
+    local unreliable = ReplicatedStorage:FindFirstChild("UnreliableMainEvent")
+    if unreliable then
+        pcall(function() unreliable:FireServer("Stomp") end)
+    end
+end
+
+local function fireMainEventGrab()
+    local now = tick()
+    if now - lastGrabRemoteTick < 0.32 then return end
+    lastGrabRemoteTick = now
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if mainEvent then
+        pcall(function() mainEvent:FireServer("PickUp") end)
+        pcall(function() mainEvent:FireServer("Grabbing", false) end)
+    end
+end
+
+local function fireMainEventDropGrab()
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if mainEvent then
+        pcall(function() mainEvent:FireServer("PickUp") end)
+        pcall(function() mainEvent:FireServer("Grabbing", false) end)
+        pcall(function() mainEvent:FireServer("Carry") end)
+    end
+end
+
+local function isLocalGrabbing(char)
+    for _, c in ipairs(collectLocalCharacterModels()) do
+        if c:FindFirstChild("GRABBING_CONSTRAINT") then return true end
+    end
+    if char and char:FindFirstChild("GRABBING_CONSTRAINT") then return true end
+    return false
+end
+
+local function performKnockStomp(myHrp, targetChar)
+    local normalTorso = targetChar:FindFirstChild("Torso") or targetChar:FindFirstChild("UpperTorso") or targetChar:FindFirstChild("HumanoidRootPart")
+    if not normalTorso then return false end
+    isOrbiting = false
+    myHrp.AssemblyLinearVelocity = Vector3.zero
+    myHrp.AssemblyAngularVelocity = Vector3.zero
+    myHrp.CFrame = CFrame.new(normalTorso.Position + Vector3.new(0, 3.2, 0), normalTorso.Position + Vector3.new(0, 3.2, 1))
+    fireMainEventStomp()
+    return true
+end
+
+local ownerPlayer = findPlayer(OWNER_NAME)
+
+local function getLeader()
+    if grantedUser then
+        local gChar = getHoodCharacterModel(grantedUser)
+        if gChar and gChar:FindFirstChild("HumanoidRootPart") then
+            return grantedUser
+        end
+    end
+    if not ownerPlayer then
+        ownerPlayer = findPlayer(OWNER_NAME)
+    end
+    if ownerPlayer then
+        local oChar = getHoodCharacterModel(ownerPlayer)
+        if oChar and oChar:FindFirstChild("HumanoidRootPart") then
+            return ownerPlayer
+        end
+    end
+    return ownerPlayer
+end
+
+local function getLeaderHrp()
+    local leader = getLeader()
+    if not leader then return nil, nil end
+    local leaderChar = getHoodCharacterModel(leader)
+    local hrp = leaderChar and leaderChar:FindFirstChild("HumanoidRootPart")
+    return leader, hrp
+end
+
+local function getOwnerHrp()
+    if not ownerPlayer then
+        ownerPlayer = findPlayer(OWNER_NAME)
+    end
+    if not ownerPlayer then return nil end
+    local ownerChar = getHoodCharacterModel(ownerPlayer)
+    return ownerChar and ownerChar:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHostHrp()
+    local _, leaderHrp = getLeaderHrp()
+    if leaderHrp then return leaderHrp end
+    return getOwnerHrp()
+end
+
+local function getBringControlHrp(fallbackHrp)
+    local lpChar = LocalPlayer.Character
+    local lpHrp = lpChar and lpChar:FindFirstChild("HumanoidRootPart")
+    if lpHrp then return lpHrp, lpChar end
+    if fallbackHrp then return fallbackHrp, getHoodCharacterModel(LocalPlayer) end
+    return nil, nil
+end
+
+local function zeroRootMotion(hrp)
+    if not hrp then return end
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        hrp.Velocity = Vector3.zero
+        hrp.RotVelocity = Vector3.zero
+    end)
+end
+
+local function clearBringPhysicsRep(hrp)
+    if not hrp then return end
+    if sethiddenproperty then
+        pcall(function() sethiddenproperty(hrp, "PhysicsRepRootPart", nil) end)
+    end
+end
+
 
 -- ==========================================
 -- SAFE RIGHT-CLICK HOLD FOR GUNS (ADS)
@@ -671,12 +1140,13 @@ local function removeGunHandlerHook()
 end
 
 pcall(function()
-    if hookmetamethod then
+    if hookmetamethod and newcclosure and getnamecallmethod then
+        local safeCheckCaller = checkcaller or function() return false end
         local oldNamecall
         oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local method = getnamecallmethod()
             local args = {...}
-            if not checkcaller() and SilentAim.Enabled and (method == "FireServer" or method == "fireServer") then
+            if not safeCheckCaller() and SilentAim.Enabled and (method == "FireServer" or method == "fireServer") then
                 local cmd = tostring(args[1])
                 if cmd == "UpdateMousePos" or cmd == "UpdateMousePosI" or cmd == "MousePos" then
                     local best = getBestSilentTarget()
@@ -699,7 +1169,7 @@ pcall(function()
 end)
 
 if SilentAim.Enabled then
-    applyGunHandlerHook()
+    pcall(applyGunHandlerHook)
 end
 
 RunService.RenderStepped:Connect(function()
@@ -716,45 +1186,8 @@ RunService.RenderStepped:Connect(function()
 end)
 
 -- ==========================================
--- UI PANEL
+-- UI PANEL (buttons)
 -- ==========================================
-
-local playerGui = LocalPlayer:WaitForChild("PlayerGui", 5)
-if playerGui and playerGui:FindFirstChild("StandoControlPanel") then
-    playerGui.StandoControlPanel:Destroy()
-end
-
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "StandoControlPanel"
-screenGui.ResetOnSpawn = false
-screenGui.Parent = playerGui
-
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 220, 0, 460)
-frame.Position = UDim2.new(0.03, 0, 0.28, 0)
-frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
-frame.Active = true
-frame.Draggable = true
-frame.Parent = screenGui
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 25)
-title.BackgroundTransparency = 1
-title.Text = "STANDO PANEL [MASTER SUITE]"
-title.TextColor3 = Color3.fromRGB(255, 255, 255)
-title.TextSize = 12
-title.Font = Enum.Font.SourceSansBold
-title.Parent = frame
-
-local status = Instance.new("TextLabel")
-status.Size = UDim2.new(1, 0, 0, 20)
-status.Position = UDim2.new(0, 0, 0, 22)
-status.BackgroundTransparency = 1
-status.Text = "Status: FOLLOWING"
-status.TextColor3 = Color3.fromRGB(100, 200, 255)
-status.TextSize = 11
-status.Font = Enum.Font.SourceSans
-status.Parent = frame
 
 local function makeButton(name, yPos, callback)
     local btn = Instance.new("TextButton")
@@ -818,6 +1251,27 @@ local function fullStopAndReturn()
     stompTargetName = nil
     isManualTarget = false
     isGuardActive = false
+    isProtectionRetaliating = false
+    bringCancelToken = bringCancelToken + 1
+    isBringing = false
+    bringTargetName = nil
+    bringPhase = "knock"
+    bringPhaseStarted = 0
+    bringGrabSent = false
+    bringDropSent = false
+    bringLastGrabTick = 0
+    bringHostTpDone = false
+    if bringNoclipConn then
+        bringNoclipConn:Disconnect()
+        bringNoclipConn = nil
+    end
+    for _, model in ipairs(collectLocalCharacterModels()) do
+        for _, part in ipairs(model:GetDescendants()) do
+            if part:IsA("BasePart") then
+                pcall(function() part.Anchored = false end)
+            end
+        end
+    end
     currentTarget = nil
     formationMode = "none"
     standPositionMode = "default"
@@ -878,6 +1332,289 @@ local function startStand()
     status.TextColor3 = Color3.fromRGB(100, 200, 255)
 end
 
+local function getKnockedBodyPart(targetChar)
+    if not targetChar then return nil end
+    return targetChar:FindFirstChild("UpperTorso") or targetChar:FindFirstChild("Torso") or targetChar:FindFirstChild("HumanoidRootPart")
+end
+
+local function getTargetHoodChar(targetPlayer)
+    if not targetPlayer then return nil end
+    return getHoodCharacterModel(targetPlayer)
+end
+
+local function snapBringHrpTo(controlHrp, goalPos, lookAtPos)
+    if not controlHrp or not goalPos then return math.huge end
+    lookAtPos = lookAtPos or (goalPos + Vector3.new(0, 0, -1))
+    clearBringPhysicsRep(controlHrp)
+    zeroRootMotion(controlHrp)
+    pcall(function()
+        controlHrp.CFrame = CFrame.new(goalPos, lookAtPos)
+    end)
+    local hoodChar = getHoodCharacterModel(LocalPlayer)
+    if hoodChar then
+        local hoodHrp = hoodChar:FindFirstChild("HumanoidRootPart")
+        if hoodHrp and hoodHrp ~= controlHrp then
+            zeroRootMotion(hoodHrp)
+            pcall(function() hoodHrp.CFrame = controlHrp.CFrame end)
+        end
+    end
+    return (goalPos - controlHrp.Position).Magnitude
+end
+
+local function getHostDropCFrame(hostHrp)
+    local standPos = hostHrp.Position + hostHrp.CFrame.LookVector * BRING_DROP_STUDS + Vector3.new(0, 1.2, 0)
+    local lookAt = hostHrp.Position + Vector3.new(0, 1.5, 0)
+    return CFrame.new(standPos, lookAt)
+end
+
+local function teleportBringToHost(controlHrp, controlChar)
+    local hostHrp = getHostHrp()
+    if not hostHrp or not controlHrp then return false end
+    local goal = getHostDropCFrame(hostHrp)
+    clearBringPhysicsRep(controlHrp)
+    zeroRootMotion(controlHrp)
+    pcall(function()
+        controlHrp.Anchored = true
+        controlHrp.CFrame = goal
+    end)
+    local hoodChar = getHoodCharacterModel(LocalPlayer)
+    if hoodChar then
+        for _, part in ipairs(hoodChar:GetDescendants()) do
+            if part:IsA("BasePart") then
+                zeroRootMotion(part)
+                if part == controlHrp or part.Name == "HumanoidRootPart" then
+                    pcall(function()
+                        part.CFrame = goal
+                        part.Anchored = true
+                    end)
+                end
+            end
+        end
+    end
+    if controlChar then
+        for _, part in ipairs(controlChar:GetDescendants()) do
+            if part:IsA("BasePart") then
+                zeroRootMotion(part)
+                part.AssemblyLinearVelocity = Vector3.zero
+                part.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+    end
+    return true
+end
+
+local function unanchorBringControl(controlHrp)
+    for _, model in ipairs(collectLocalCharacterModels()) do
+        for _, part in ipairs(model:GetDescendants()) do
+            if part:IsA("BasePart") then
+                pcall(function() part.Anchored = false end)
+            end
+        end
+    end
+end
+
+local function setAllLocalHrpsCFrame(goalCFrame, anchorParts)
+    if not goalCFrame then return end
+    for _, model in ipairs(collectLocalCharacterModels()) do
+        local hrp = model:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            clearBringPhysicsRep(hrp)
+            zeroRootMotion(hrp)
+            pcall(function()
+                if anchorParts then hrp.Anchored = true end
+                hrp.CFrame = goalCFrame
+            end)
+        end
+    end
+end
+
+local function setBringNoclipEnabled(on)
+    if on then
+        if bringNoclipConn then return end
+        bringNoclipConn = RunService.Stepped:Connect(function()
+            if not isBringing then return end
+            for _, model in ipairs(collectLocalCharacterModels()) do
+                for _, part in ipairs(model:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end
+            local tp = bringTargetName and findPlayer(bringTargetName)
+            local tChar = tp and getTargetHoodChar(tp)
+            if tChar and (bringPhase == "hover" or bringPhase == "return") then
+                for _, part in ipairs(tChar:GetDescendants()) do
+                    if part:IsA("BasePart") then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        end)
+    elseif bringNoclipConn then
+        bringNoclipConn:Disconnect()
+        bringNoclipConn = nil
+    end
+end
+
+local function finishBring()
+    bringCancelToken = bringCancelToken + 1
+    isBringing = false
+    bringTargetName = nil
+    bringPhase = "knock"
+    bringPhaseStarted = 0
+    bringGrabSent = false
+    bringDropSent = false
+    bringLastGrabTick = 0
+    bringHostTpDone = false
+    pcall(function() setBringNoclipEnabled(false) end)
+    pcall(unanchorBringControl)
+    pcall(startStand)
+    if status then
+        status.Text = "Status: BRING DONE"
+    end
+end
+
+local function runBringSequence(targetPlayer, token)
+    local targetName = targetPlayer.Name
+    if status then
+        status.Text = "Status: BRING (KNOCK) " .. targetName
+    end
+
+    local knockTimeout = tick() + 90
+    while token == bringCancelToken and isBringing and tick() < knockTimeout do
+        local targetChar = getTargetHoodChar(targetPlayer)
+        if targetChar and isCharacterKnocked(targetChar, targetPlayer) then
+            break
+        end
+        currentTarget = targetPlayer
+        isOrbiting = true
+        isManualTarget = true
+        task.wait(0.05)
+    end
+
+    if token ~= bringCancelToken or not isBringing then
+        finishBring()
+        return
+    end
+
+    local targetChar = getTargetHoodChar(targetPlayer)
+    if not targetChar or not isCharacterKnocked(targetChar, targetPlayer) then
+        finishBring()
+        return
+    end
+
+    isOrbiting = false
+    isManualTarget = false
+    currentTarget = nil
+    unequipAll()
+    setRightClick(false)
+    if status then
+        status.Text = "Status: BRING (GRAB) " .. targetName
+    end
+
+    local grabbed = false
+    local grabTimeout = tick() + 14
+    while token == bringCancelToken and isBringing and tick() < grabTimeout do
+        targetChar = getTargetHoodChar(targetPlayer)
+        local bodyPart = getKnockedBodyPart(targetChar)
+        if not targetChar or not bodyPart or not isCharacterKnocked(targetChar, targetPlayer) then
+            break
+        end
+        local hoverCf = CFrame.new(bodyPart.Position + Vector3.new(0, 3.5, 0), bodyPart.Position + Vector3.new(0, 2, 0))
+        setAllLocalHrpsCFrame(hoverCf, true)
+        if isLocalGrabbing() then
+            grabbed = true
+            break
+        end
+        fireMainEventGrab()
+        task.wait(0.35)
+    end
+
+    if token ~= bringCancelToken or not isBringing then
+        finishBring()
+        return
+    end
+    if not grabbed then
+        finishBring()
+        return
+    end
+
+    if status then
+        status.Text = "Status: BRING (TP HOST) " .. targetName
+    end
+    local hostHrp = getHostHrp()
+    if not hostHrp then
+        fireMainEventDropGrab()
+        finishBring()
+        return
+    end
+
+    local hostCf = getHostDropCFrame(hostHrp)
+    for _ = 1, 10 do
+        if token ~= bringCancelToken then
+            finishBring()
+            return
+        end
+        hostHrp = getHostHrp()
+        if hostHrp then hostCf = getHostDropCFrame(hostHrp) end
+        setAllLocalHrpsCFrame(hostCf, true)
+        task.wait(0.07)
+    end
+
+    if status then
+        status.Text = "Status: BRING (DROP) " .. targetName
+    end
+    task.wait(0.45)
+    if token ~= bringCancelToken then
+        finishBring()
+        return
+    end
+
+    unanchorBringControl()
+    fireMainEventDropGrab()
+    task.wait(0.15)
+    fireMainEventDropGrab()
+    finishBring()
+end
+
+local function startBringTarget(targetPlayer)
+    bringCancelToken = bringCancelToken + 1
+    local token = bringCancelToken
+    isBringing = true
+    bringTargetName = targetPlayer.Name
+    bringPhase = "knock"
+    bringPhaseStarted = tick()
+    bringGrabSent = false
+    bringDropSent = false
+    bringLastGrabTick = 0
+    bringHostTpDone = false
+    setBringNoclipEnabled(true)
+    isLoopkill = false
+    loopkillTargetName = nil
+    isStomping = false
+    stompTargetName = nil
+    isProtectionRetaliating = false
+    isGuardActive = false
+    isManualTarget = true
+    currentTarget = targetPlayer
+    isOrbiting = true
+    isFollowing = false
+    isHiding = false
+    formationMode = "none"
+    task.spawn(function()
+        local ok, err = pcall(function()
+            runBringSequence(targetPlayer, token)
+        end)
+        if isBringing then
+            pcall(finishBring)
+        end
+        if not ok then
+            warn("[Bring] " .. tostring(err))
+            pcall(finishBring)
+        end
+    end)
+end
+
 local function toggleGKill()
     isGuardActive = not isGuardActive
     isLoopkill = false
@@ -885,6 +1622,7 @@ local function toggleGKill()
     isStomping = false
     stompTargetName = nil
     isManualTarget = false
+    isProtectionRetaliating = false
     if not isGuardActive then
         currentTarget = nil
         isOrbiting = false
@@ -895,17 +1633,263 @@ local function toggleGKill()
     end
 end
 
+local PROTECTION_RETALIATE_COOLDOWN = 1.5
+
+local function getPlayerFromTouchPart(part)
+    if not part or not part.Parent then return nil end
+    local model = part:FindFirstAncestorOfClass("Model")
+    if not model then return nil end
+    if not model:FindFirstChildOfClass("Humanoid") then return nil end
+    return Players:GetPlayerFromCharacter(model)
+end
+
+local function playerFromBodyEffectValue(val)
+    if not val then return nil end
+    if val:IsA("ObjectValue") and val.Value then
+        if val.Value:IsA("Player") then return val.Value end
+        return Players:GetPlayerFromCharacter(val.Value)
+    end
+    if val:IsA("StringValue") and val.Value ~= "" then
+        return findPlayer(val.Value)
+    end
+    if val:IsA("IntValue") then
+        return Players:GetPlayerByUserId(val.Value)
+    end
+    return nil
+end
+
+local function nameMatchesLocalPlayer(nameStr)
+    if not nameStr or nameStr == "" then return false end
+    local lower = string.lower(nameStr)
+    return lower == string.lower(LocalPlayer.Name) or lower == string.lower(LocalPlayer.DisplayName)
+        or string.find(lower, string.lower(LocalPlayer.Name), 1, true) ~= nil
+end
+
+local function getAttackerFromBodyEffects(char)
+    if not char then return nil end
+    local be = char:FindFirstChild("BodyEffects")
+    if not be then return nil end
+
+    local priorityKeys = { "Attacker", "LastAttacker", "ShotBy", "LastDamagedBy", "DamagedBy", "HitBy", "Attacking" }
+    for i = 1, #priorityKeys do
+        local plr = playerFromBodyEffectValue(be:FindFirstChild(priorityKeys[i]))
+        if plr and plr ~= LocalPlayer and not isWhitelisted(plr) then return plr end
+    end
+
+    local children = be:GetChildren()
+    for i = 1, #children do
+        local child = children[i]
+        local lowerName = string.lower(child.Name)
+        if lowerName:find("attack") or lowerName:find("shot") or lowerName:find("damage") or lowerName:find("hit") then
+            local plr = playerFromBodyEffectValue(child)
+            if plr and plr ~= LocalPlayer and not isWhitelisted(plr) then return plr end
+        end
+    end
+    return nil
+end
+
+local function isCombatTool(tool)
+    if not tool or not tool:IsA("Tool") then return false end
+    local tName = string.lower(tool.Name)
+    if tName:find("knife") or tName:find("pitchfork") or tName:find("stopsign") or tName:find("whip") or tName:find("fist") then
+        return false
+    end
+    return tool:FindFirstChild("Handle") ~= nil
+end
+
+local function findLikelyRangedAttacker(myHrp)
+    if not myHrp then return nil end
+    local myPos = myHrp.Position
+    local bestPlayer = nil
+    local bestScore = -math.huge
+
+    local players = Players:GetPlayers()
+    for i = 1, #players do
+        local p = players[i]
+        if p ~= LocalPlayer and not isWhitelisted(p) and p.Character then
+            local pChar = p.Character
+            local pHrp = pChar:FindFirstChild("HumanoidRootPart")
+            local pHum = pChar:FindFirstChildOfClass("Humanoid")
+            if pHrp and pHum and pHum.Health > 0 then
+                local dist = (pHrp.Position - myPos).Magnitude
+                if dist <= 280 then
+                    local toMe = myPos - pHrp.Position
+                    local flatToMe = Vector3.new(toMe.X, 0, toMe.Z)
+                    if flatToMe.Magnitude > 0.1 then
+                        flatToMe = flatToMe.Unit
+                        local lookFlat = Vector3.new(pHrp.CFrame.LookVector.X, 0, pHrp.CFrame.LookVector.Z)
+                        if lookFlat.Magnitude > 0.1 then
+                            lookFlat = lookFlat.Unit
+                            local aimDot = lookFlat:Dot(flatToMe)
+                            local tool = pChar:FindFirstChildOfClass("Tool")
+                            local hasGun = isCombatTool(tool)
+                            local attackingMe = false
+                            local pBe = pChar:FindFirstChild("BodyEffects")
+                            if pBe then
+                                local atkVal = pBe:FindFirstChild("Attacking") or pBe:FindFirstChild("AttackingPlayer") or pBe:FindFirstChild("Target")
+                                if atkVal and atkVal:IsA("StringValue") and nameMatchesLocalPlayer(atkVal.Value) then
+                                    attackingMe = true
+                                end
+                            end
+
+                            local score = aimDot + (hasGun and 0.75 or 0) + (attackingMe and 2.5 or 0) - (dist / 400)
+                            if (attackingMe or (hasGun and aimDot > 0.35) or aimDot > 0.65) and score > bestScore then
+                                bestScore = score
+                                bestPlayer = p
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return bestPlayer
+end
+
+local function resolveProtectionAttacker(char)
+    if not char then return nil end
+    local attacker = getAttackerFromBodyEffects(char)
+    if attacker then return attacker end
+    local myHrp = char:FindFirstChild("HumanoidRootPart")
+    return findLikelyRangedAttacker(myHrp)
+end
+
+local function tryProtectionRetaliationFromDamage()
+    if not isProtectionActive and not isProtection2Active then return end
+    if isUnloaded or isHiding or isLoopkill or isBringing then return end
+
+    local char = LocalPlayer.Character
+    if not char then return end
+
+    local attacker = resolveProtectionAttacker(char)
+    if attacker then
+        engageProtectionTarget(attacker, isProtection2Active)
+    end
+end
+
+local function engageProtectionTarget(attacker, withStomp)
+    if not attacker or attacker == LocalPlayer or isWhitelisted(attacker) then return end
+    if isLoopkill or isHiding or isBringing then return end
+    if isProtectionRetaliating then return end
+
+    local now = tick()
+    local lastTouch = protectionTouchCooldown[attacker.UserId]
+    if lastTouch and now - lastTouch < PROTECTION_RETALIATE_COOLDOWN then return end
+    protectionTouchCooldown[attacker.UserId] = now
+
+    isProtectionRetaliating = true
+    isLoopkill = false
+    loopkillTargetName = nil
+    isGuardActive = false
+    isManualTarget = true
+    currentTarget = attacker
+    isOrbiting = true
+    isFollowing = false
+    isHiding = false
+    formationMode = "none"
+
+    if withStomp then
+        isStomping = true
+        stompTargetName = attacker.Name
+        status.Text = "Status: PROTECTION2 -> " .. attacker.Name
+    else
+        isStomping = false
+        stompTargetName = nil
+        status.Text = "Status: PROTECTION -> " .. attacker.Name
+    end
+end
+
+local function clearProtectionRetaliation(idleStatusText)
+    isProtectionRetaliating = false
+    isManualTarget = false
+    isStomping = false
+    stompTargetName = nil
+    currentTarget = nil
+    isOrbiting = false
+    isFollowing = true
+    if idleStatusText then
+        status.Text = idleStatusText
+    end
+end
+
+local function bindProtectionCharacter(char)
+    if not char then return end
+
+    local function onTouched(hit)
+        if not isProtectionActive and not isProtection2Active then return end
+        if isUnloaded or isHiding or isLoopkill or isBringing then return end
+        local toucher = getPlayerFromTouchPart(hit)
+        if not toucher then return end
+        engageProtectionTarget(toucher, isProtection2Active)
+    end
+    local descendants = char:GetDescendants()
+    for i = 1, #descendants do
+        local desc = descendants[i]
+        if desc:IsA("BasePart") then
+            desc.Touched:Connect(onTouched)
+        end
+    end
+    char.DescendantAdded:Connect(function(desc)
+        if desc:IsA("BasePart") then
+            desc.Touched:Connect(onTouched)
+        end
+    end)
+
+    local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 8)
+    if hum then
+        lastProtectionHealth = hum.Health
+        hum.HealthChanged:Connect(function(newHealth)
+            if lastProtectionHealth and newHealth < lastProtectionHealth - 0.25 then
+                tryProtectionRetaliationFromDamage()
+            end
+            lastProtectionHealth = newHealth
+        end)
+    end
+
+    task.spawn(function()
+        local be = char:WaitForChild("BodyEffects", 12)
+        if not be then return end
+        be.ChildAdded:Connect(function(child)
+            if not isProtectionActive and not isProtection2Active then return end
+            local lowerName = string.lower(child.Name)
+            if lowerName:find("attack") or lowerName:find("shot") or lowerName:find("damage") or lowerName:find("hit") then
+                tryProtectionRetaliationFromDamage()
+            end
+        end)
+    end)
+end
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+    resetAntiStompSession()
+    bindProtectionCharacter(char)
+end)
+if LocalPlayer.Character then
+    bindProtectionCharacter(LocalPlayer.Character)
+end
+
+local function parseOnOff(param)
+    if not param then return nil end
+    local p = string.lower(param)
+    if p == "on" or p == "true" or p == "1" then return true end
+    if p == "off" or p == "false" or p == "0" then return false end
+    return nil
+end
+
 local function ejectScript()
     isUnloaded = true
+    genv.zamanbaslaticisi = false
+    genv.AntiAfkExecuted = false
+    isGlueFollowActive = false
+    pcall(function() RunService:UnbindFromRenderStep(GLUE_RENDER_STEP) end)
     setRightClick(false)
     stopSyncDance()
     removeGunHandlerHook()
     if fovCircle then pcall(function() fovCircle:Remove() end) end
     if screenGui then screenGui:Destroy() end
     fullStopAndReturn()
-    getgenv().StandoUnload = nil
+    genv.StandoUnload = nil
 end
-getgenv().StandoUnload = ejectScript
+genv.StandoUnload = ejectScript
 
 local lastReloadTick = 0
 local function triggerReload(ammoVal, maxAmmoVal)
@@ -913,12 +1897,10 @@ local function triggerReload(ammoVal, maxAmmoVal)
     if currentTime - lastReloadTick < 0.3 then return end
     lastReloadTick = currentTime
     pcall(function()
-        local char = getChar(LocalPlayer)
-        local tool = char and char:FindFirstChildOfClass("Tool")
+        local c = getChar(LocalPlayer)
+        local tool = c and c:FindFirstChildOfClass("Tool")
         local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
-        if mainEvent and tool then
-            mainEvent:FireServer("Reload", tool)
-        end
+        if mainEvent and tool then mainEvent:FireServer("Reload", tool) end
         VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.R, false, game)
         task.wait(0.05)
         VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.R, false, game)
@@ -979,7 +1961,7 @@ end
 local function getFormationOffset(mode, altIndex, totalAlts)
     totalAlts = math.max(1, totalAlts)
     altIndex = math.clamp(altIndex, 1, totalAlts)
-    local s = FORMATION_SPACING
+    local spacing = FORMATION_SPACING
 
     if mode == "box" then
         local cols = math.max(2, math.ceil(math.sqrt(totalAlts)))
@@ -988,22 +1970,25 @@ local function getFormationOffset(mode, altIndex, totalAlts)
         local col = index0 % cols
         local slotsBeforeRow = row * cols
         local slotsInRow = math.min(cols, totalAlts - slotsBeforeRow)
-        if slotsInRow < 1 then slotsInRow = cols end
-        local rowWidth = (slotsInRow - 1) * s
-        local x = -rowWidth * 0.5 + col * s
-        local z = -5.5 - row * s
+        if slotsInRow < 1 then
+            slotsInRow = cols
+        end
+        local rowWidth = (slotsInRow - 1) * spacing
+        local x = -rowWidth * 0.5 + col * spacing
+        local z = -5.5 - row * spacing
         return Vector3.new(x, 0, z)
 
     elseif mode == "triangle" then
         local index0 = altIndex - 1
-        local row, consumed = 0, 0
+        local row = 0
+        local consumed = 0
         while true do
             local rowSlots = row + 1
             if index0 < consumed + rowSlots then
                 local posInRow = index0 - consumed
-                local rowWidth = (rowSlots - 1) * s
-                local x = -rowWidth * 0.5 + posInRow * s
-                local z = -5.5 - row * (s * 0.85)
+                local rowWidth = (rowSlots - 1) * spacing
+                local x = -rowWidth * 0.5 + posInRow * spacing
+                local z = -5.5 - row * (spacing * 0.85)
                 return Vector3.new(x, 0, z)
             end
             consumed = consumed + rowSlots
@@ -1011,11 +1996,16 @@ local function getFormationOffset(mode, altIndex, totalAlts)
         end
 
     elseif mode == "line" then
-        local totalWidth = (totalAlts - 1) * s
-        local x = -totalWidth * 0.5 + (altIndex - 1) * s
+        local totalWidth = (totalAlts - 1) * spacing
+        local x = -totalWidth * 0.5 + (altIndex - 1) * spacing
         return Vector3.new(x, 0, -5)
 
-    elseif mode == "circle" then
+    elseif mode == "wedge" then
+        local row = math.floor((altIndex - 1) / 2)
+        local side = ((altIndex - 1) % 2 == 0) and -1 or 1
+        return Vector3.new(side * spacing * 0.85, row * 2.1, -5 - row * spacing)
+
+    elseif mode == "surround" or mode == "circle" then
         local radius = math.clamp(4.2 + totalAlts * 0.45, 4.2, 6.5)
         local angle = ((altIndex - 1) / totalAlts) * (2 * math.pi) + (math.pi * 0.5)
         return Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius - 1.2)
@@ -1023,8 +2013,8 @@ local function getFormationOffset(mode, altIndex, totalAlts)
     else
         local lane = ((altIndex - 1) % 2 == 0) and -1 or 1
         local laneIndex = math.ceil(altIndex / 2)
-        local x = lane * (2 + laneIndex * (s * 0.45))
-        local z = -4.5 - laneIndex * (s * 0.65)
+        local x = lane * (2 + laneIndex * (spacing * 0.45))
+        local z = -4.5 - laneIndex * (spacing * 0.65)
         return Vector3.new(x, 0, z)
     end
 end
@@ -1032,7 +2022,7 @@ end
 local function applyFormationFollow(myHrp, leaderHrp, offset)
     local leaderVel = leaderHrp.AssemblyLinearVelocity or Vector3.zero
     local speed = leaderVel.Magnitude
-    local predictTime = math.clamp(0.1 + speed / 140, 0.1, 0.28)
+    local predictTime = math.clamp(0.14 + speed / 110, 0.14, 0.38)
     local predictedLeaderPos = leaderHrp.Position + (leaderVel * predictTime)
     local goalCFrame = CFrame.new(predictedLeaderPos) * leaderHrp.CFrame.Rotation * CFrame.new(offset)
 
@@ -1043,18 +2033,76 @@ local function applyFormationFollow(myHrp, leaderHrp, offset)
         myHrp.CFrame = goalCFrame
         return
     end
-    local alpha = math.clamp(FORMATION_SMOOTH + (dist / 100), 0.28, 0.72)
+
+    local alpha = math.clamp(FORMATION_SMOOTH + (dist / 120), 0.22, 0.65)
     myHrp.AssemblyLinearVelocity = Vector3.zero
     myHrp.CFrame = myHrp.CFrame:Lerp(goalCFrame, alpha)
 end
+
+local function clearGluePhysics(hrp)
+    if hrp and sethiddenproperty then
+        pcall(function() sethiddenproperty(hrp, "PhysicsRepRootPart", nil) end)
+    end
+end
+
+local function isGlueMovementActive()
+    if not isGlueFollowActive or isBringing then return false end
+    if isOrbiting or isStomping or isLoopkill or isManualTarget then return true end
+    return isFollowing and not isHiding
+end
+
+local function getGlueCombatGoalCFrame(targetHead, altIndex, totalAlts)
+    totalAlts = math.max(1, totalAlts)
+    local spread = ((altIndex - 1) / totalAlts) * (2 * math.pi)
+    local r = 5.2
+    local pos = targetHead.Position + Vector3.new(math.cos(spread) * r, 0, math.sin(spread) * r)
+    return CFrame.new(pos, targetHead.Position)
+end
+
+local function refreshGlueSpot(myHrp, leaderHrp)
+    if not isGlueMovementActive() then glueSpot = nil return end
+    local altIndex, totalAlts = getAltIndex()
+    if isOrbiting and currentTarget and not isWhitelisted(currentTarget) then
+        local tChar = getChar(currentTarget)
+        local head = tChar and (tChar:FindFirstChild("Head") or tChar:FindFirstChild("HumanoidRootPart"))
+        if head then glueSpot = getGlueCombatGoalCFrame(head, altIndex, totalAlts) end
+    elseif leaderHrp and isFollowing and not isHiding then
+        local offset = getFormationOffset(formationMode, altIndex, totalAlts)
+        local leaderVel = leaderHrp.AssemblyLinearVelocity or Vector3.zero
+        local predictTime = math.clamp(0.1 + leaderVel.Magnitude / 140, 0.1, 0.28)
+        local predicted = leaderHrp.Position + leaderVel * predictTime
+        glueSpot = CFrame.new(predicted) * leaderHrp.CFrame.Rotation * CFrame.new(offset)
+    else
+        glueSpot = nil
+    end
+end
+
+local function toggleGlueFollow()
+    isGlueFollowActive = not isGlueFollowActive
+    if not isGlueFollowActive then
+        clearGluePhysics(getMoveHrp(LocalPlayer))
+        glueSpot = nil
+    end
+    if status then status.Text = "Glue follow: " .. (isGlueFollowActive and "ON" or "OFF") end
+end
+
+RunService:BindToRenderStep(GLUE_RENDER_STEP, Enum.RenderPriority.Camera.Value + 1, function()
+    if isUnloaded or not isGlueMovementActive() or not glueSpot then return end
+    local root = getMoveHrp(LocalPlayer)
+    if not root then return end
+    if sethiddenproperty then pcall(function() sethiddenproperty(root, "PhysicsRepRootPart", root) end) end
+    root.CFrame = glueSpot
+end)
 
 makeButton("Stand / Follow Me", 48, startStand)
 makeButton("Full Stop (.stop)", 74, fullStopAndReturn)
 makeButton("Toggle GKill (.gk)", 100, toggleGKill)
 makeButton("Force Reset (.reset)", 126, function()
     fullStopAndReturn()
-    local char = LocalPlayer.Character
-    if char then pcall(function() char:BreakJoints() end) end
+    if not fireHoodResetCharacter() then
+        local char = LocalPlayer.Character
+        if char then pcall(function() char:BreakJoints() end) end
+    end
 end)
 makeButton("Equip Revolver", 152, function() currentWeapon = "Revolver"; attackSubMode = "combat"; equipTool("Revolver"); status.Text = "Weapon: Revolver" end)
 makeButton("Equip Knife", 178, function() currentWeapon = "Knife"; attackSubMode = "knife"; equipTool("Knife"); status.Text = "Weapon: Knife" end)
@@ -1080,8 +2128,14 @@ makeButton("Low GFX", 334, function()
     status.Text = "Low GFX Applied"
 end)
 makeButton("Rejoin Server", 360, function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
-makeButton("Eject / Unload (.eject)", 386, ejectScript)
-makeButton("Toggle Menu View", 412, function() frame.Visible = not frame.Visible end)
+makeButton("Toggle Glue (.glue)", 360, toggleGlueFollow)
+makeButton("Anti Stomp (.as)", 386, function()
+    isAntiStompActive = not isAntiStompActive
+    if isAntiStompActive then resetAntiStompSession() end
+    status.Text = "Anti Stomp: " .. (isAntiStompActive and "ON" or "OFF")
+end)
+makeButton("Eject / Unload (.eject)", 412, ejectScript)
+makeButton("Toggle Menu View", 438, function() frame.Visible = not frame.Visible end)
 
 local function executeCommand(speaker, msg)
     if isUnloaded or not speaker or not msg then return end
@@ -1120,8 +2174,10 @@ local function executeCommand(speaker, msg)
         status.Text = "Silent Aim: " .. tostring(SilentAim.Enabled)
     elseif cleanCmd == "reset" or cleanCmd == "forcereset" or cleanCmd == "re" then
         fullStopAndReturn()
-        local char = LocalPlayer.Character
-        if char then pcall(function() char:BreakJoints() end) end
+        if not fireHoodResetCharacter() then
+            local char = LocalPlayer.Character
+            if char then pcall(function() char:BreakJoints() end) end
+        end
     elseif cleanCmd == "loopkill" or cleanCmd == "lk" then
         local t = findPlayer(param)
         if t and not isWhitelisted(t) then
@@ -1129,6 +2185,7 @@ local function executeCommand(speaker, msg)
             isLoopkill = true
             isStomping = false
             stompTargetName = nil
+            isProtectionRetaliating = false
             isManualTarget = true
             isGuardActive = false
             currentTarget = t
@@ -1145,6 +2202,7 @@ local function executeCommand(speaker, msg)
             isStomping = true
             isLoopkill = false
             loopkillTargetName = nil
+            isProtectionRetaliating = false
             isManualTarget = true
             isGuardActive = false
             currentTarget = t
@@ -1161,6 +2219,7 @@ local function executeCommand(speaker, msg)
             loopkillTargetName = nil
             isStomping = false
             stompTargetName = nil
+            isProtectionRetaliating = false
             isManualTarget = true
             isGuardActive = false
             currentTarget = t
@@ -1169,6 +2228,63 @@ local function executeCommand(speaker, msg)
             isHiding = false
             formationMode = "none"
             status.Text = "Status: KNOCKING " .. t.Name
+        end
+    elseif cleanCmd == "protection" or cleanCmd == "prot" then
+        local state = parseOnOff(param)
+        if state == true then
+            isProtectionActive = true
+            isProtection2Active = false
+            status.Text = "Status: PROTECTION ON"
+        elseif state == false then
+            isProtectionActive = false
+            if isProtectionRetaliating and not isProtection2Active then
+                clearProtectionRetaliation("Status: PROTECTION OFF")
+            else
+                status.Text = "Status: PROTECTION OFF"
+            end
+        else
+            status.Text = "Usage: .protection on/off"
+        end
+    elseif cleanCmd == "protection2" or cleanCmd == "prot2" then
+        local state = parseOnOff(param)
+        if state == true then
+            isProtection2Active = true
+            isProtectionActive = false
+            status.Text = "Status: PROTECTION2 ON"
+        elseif state == false then
+            isProtection2Active = false
+            if isProtectionRetaliating then
+                clearProtectionRetaliation("Status: PROTECTION2 OFF")
+            else
+                status.Text = "Status: PROTECTION2 OFF"
+            end
+        else
+            status.Text = "Usage: .protection2 on/off"
+        end
+    elseif cleanCmd == "b" or cleanCmd == "bring" then
+        local t = findPlayer(param)
+        if t and not isWhitelisted(t) then
+            startBringTarget(t)
+        elseif not param or param == "" then
+            status.Text = "Usage: .b username"
+        else
+            status.Text = "Player not found!"
+        end
+    elseif cleanCmd == "antistomp" or cleanCmd == "as" then
+        local state = parseOnOff(param)
+        if state == nil and (not param or param == "") then
+            isAntiStompActive = not isAntiStompActive
+            if isAntiStompActive then resetAntiStompSession() end
+            status.Text = "Status: ANTI STOMP " .. (isAntiStompActive and "ON" or "OFF")
+        elseif state == true then
+            isAntiStompActive = true
+            resetAntiStompSession()
+            status.Text = "Status: ANTI STOMP ON"
+        elseif state == false then
+            isAntiStompActive = false
+            status.Text = "Status: ANTI STOMP OFF"
+        else
+            status.Text = "Usage: .antistomp on/off"
         end
     elseif cleanCmd == "stop" or cleanCmd == "unequip" then
         fullStopAndReturn()
@@ -1198,6 +2314,16 @@ local function executeCommand(speaker, msg)
         formationMode = "line"
         isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
         status.Text = "Formation: Line"
+    elseif cleanCmd == "wedge" then
+        formationMode = "wedge"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        status.Text = "Formation: Wedge"
+    elseif cleanCmd == "surround" then
+        formationMode = "surround"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        status.Text = "Formation: Surround"
+    elseif cleanCmd == "glue" then
+        toggleGlueFollow()
     elseif cleanCmd == "hide" then
         stopAndHide()
     elseif cleanCmd == "walk" or cleanCmd == "stand" or cleanCmd == "follow" then
@@ -1217,11 +2343,34 @@ local lastAutoFireTick = 0
 
 RunService.RenderStepped:Connect(function()
     if isUnloaded then return end
+
     local char = getChar(LocalPlayer)
     if not char then return end
     local myHrp = getMoveHrp(LocalPlayer) or char:FindFirstChild("HumanoidRootPart")
     local myHum = getLocalHum() or char:FindFirstChildOfClass("Humanoid")
     if not myHrp or not myHum then return end
+
+    local function applySkyHide()
+        myHrp.Anchored = false
+        myHrp.AssemblyLinearVelocity = Vector3.zero
+        myHrp.AssemblyAngularVelocity = Vector3.zero
+        local timeVal = tick() * 15
+        local altIndex, totalAlts = getAltIndex()
+        local offsetAngle = ((altIndex - 1) / math.max(1, totalAlts)) * (2 * math.pi)
+        local rx = math.sin(timeVal + offsetAngle) * 45000
+        local rz = math.cos(timeVal * 0.9 + offsetAngle) * 45000
+        local ry = 50000 + (math.sin(timeVal * 2 + altIndex) * 3000)
+        myHrp.CFrame = CFrame.new(rx, ry, rz)
+    end
+
+    local hideCombat = isHiding and (isOrbiting or isStomping or isLoopkill or isBringing or isGuardActive or isManualTarget)
+
+    if (isProtectionActive or isProtection2Active) and not isProtectionRetaliating then
+        if lastProtectionHealth and myHum.Health < lastProtectionHealth - 0.25 then
+            tryProtectionRetaliationFromDamage()
+        end
+    end
+    lastProtectionHealth = myHum.Health
 
     -- Safe ADS for guns
     if isHoldingGun() and not isHiding and myHum.Health > 0 then
@@ -1230,45 +2379,17 @@ RunService.RenderStepped:Connect(function()
         setRightClick(false)
     end
 
-    -- Sky-zip Hiding
-    if isHiding then
-        myHrp.Anchored = false
-        myHrp.AssemblyLinearVelocity = Vector3.zero
-        myHrp.AssemblyAngularVelocity = Vector3.zero
-        local timeVal = tick() * 15
-        local altIndex, totalAlts = getAltIndex()
-        local offsetAngle = ((altIndex - 1) / math.max(1, totalAlts)) * (2 * math.pi)
-        
-        local rx = math.sin(timeVal + offsetAngle) * 45000
-        local rz = math.cos(timeVal * 0.9 + offsetAngle) * 45000
-        local ry = 50000 + (math.sin(timeVal * 2 + altIndex) * 3000)
-        
-        myHrp.CFrame = CFrame.new(rx, ry, rz)
+    if isHiding and not hideCombat then
+        applySkyHide()
         return
     end
 
     -- Stomp Mode Check
-    if isStomping and stompTargetName then
+    if isStomping and stompTargetName and not isBringing then
         local targetPlayer = findPlayer(stompTargetName)
-        local targetChar = targetPlayer and getChar(targetPlayer)
-        if targetChar then
-            local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
-            local targetBE = targetChar:FindFirstChild("BodyEffects")
-            local targetIsKnocked = (targetBE and targetBE:FindFirstChild("K.O") and targetBE["K.O"].Value == true) or (targetHum and targetHum.Health <= 0)
-            local normalTorso = targetChar:FindFirstChild("Torso") or targetChar:FindFirstChild("UpperTorso") or targetChar:FindFirstChild("HumanoidRootPart")
-
-            if targetIsKnocked and normalTorso then
-                isOrbiting = false
-                myHrp.AssemblyLinearVelocity = Vector3.zero
-                myHrp.AssemblyAngularVelocity = Vector3.zero
-                myHrp.CFrame = CFrame.new(normalTorso.Position + Vector3.new(0, 3.2, 0), normalTorso.Position + Vector3.new(0, 3.2, 1))
-                
-                fireMainEventStomp()
-                pcall(function()
-                    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-                    task.wait(0.05)
-                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-                end)
+        if targetPlayer and targetPlayer.Character then
+            local targetChar = targetPlayer.Character
+            if isCharacterKnocked(targetChar) and performKnockStomp(myHrp, targetChar) then
                 return
             else
                 currentTarget = targetPlayer
@@ -1277,17 +2398,46 @@ RunService.RenderStepped:Connect(function()
         else
             isStomping = false
             stompTargetName = nil
-            currentTarget = nil
-            isFollowing = true
-            status.Text = "Status: FOLLOWING"
+            if isProtectionRetaliating and isProtection2Active then
+                clearProtectionRetaliation("Status: PROTECTION2 ON")
+            else
+                currentTarget = nil
+                isFollowing = true
+                status.Text = "Status: FOLLOWING"
+            end
+        end
+    end
+
+    -- Protection (knock only): stop after target is knocked
+    if isProtectionActive and isProtectionRetaliating and not isProtection2Active and currentTarget then
+        local protChar = currentTarget.Character
+        if protChar and isCharacterKnocked(protChar) then
+            clearProtectionRetaliation("Status: PROTECTION ON")
+            return
+        end
+    end
+
+    -- Loopkill knock check: stomp when down, resume orbit when they get up
+    if isLoopkill and loopkillTargetName and not isBringing then
+        local targetPlayer = findPlayer(loopkillTargetName)
+        if targetPlayer and targetPlayer.Character then
+            currentTarget = targetPlayer
+            if isCharacterKnocked(targetPlayer.Character) then
+                if performKnockStomp(myHrp, targetPlayer.Character) then
+                    return
+                end
+            else
+                isOrbiting = true
+            end
         end
     end
 
     -- Guard / GKILL Mode
     local leader = getLeader()
-    local leaderHrp = getLeaderHrp()
+    local leaderChar = leader and getChar(leader)
+    local leaderHrp = leaderChar and leaderChar:FindFirstChild("HumanoidRootPart")
 
-    if isGuardActive and not isManualTarget and not isLoopkill and not isStomping and not isHiding then
+    if isGuardActive and not isManualTarget and not isLoopkill and not isStomping and not isBringing then
         if leaderHrp then
             local nearestEnemy = nil
             local shortestDist = 50.0
@@ -1299,7 +2449,7 @@ RunService.RenderStepped:Connect(function()
                 if p ~= leader and p ~= LocalPlayer and not isOwnerCheck and not isWhitelisted(p) and pChar then
                     local tHrp = pChar:FindFirstChild("HumanoidRootPart")
                     local tHum = pChar:FindFirstChildOfClass("Humanoid")
-                    if tHrp and tHum and tHum.Health > 0 and not isCharacterKnocked(pChar) then
+                    if tHrp and tHum and tHum.Health > 0 and not isCharacterKnocked(pChar, p) then
                         local dist = (tHrp.Position - leaderHrp.Position).Magnitude
                         if dist < shortestDist then
                             shortestDist = dist
@@ -1323,10 +2473,6 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    if isLoopkill and loopkillTargetName then
-        currentTarget = findPlayer(loopkillTargetName)
-    end
-
     -- Combat & Orbiting
     local activeTool = char:FindFirstChildOfClass("Tool")
     local isKnifeMode = (attackSubMode == "knife" or attackSubMode == "pitch" or attackSubMode == "sign" or attackSubMode == "whip")
@@ -1343,13 +2489,30 @@ RunService.RenderStepped:Connect(function()
             return
         end
 
-        local targetChar = getChar(currentTarget)
+        local targetChar = getHoodCharacterModel(currentTarget) or currentTarget.Character
         local targetHum = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
-        local targetHrp = getMoveHrp(currentTarget) or (targetChar and targetChar:FindFirstChild("HumanoidRootPart"))
+        local targetHrp = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
         local targetHead = targetChar and (targetChar:FindFirstChild("Head") or targetHrp)
+
+        if isLoopkill and targetChar and isCharacterKnocked(targetChar, currentTarget) then
+            return
+        end
+
+        if isBringing and targetChar and isCharacterKnocked(targetChar, currentTarget) then
+            return
+        end
+
+        if isProtectionActive and isProtectionRetaliating and not isProtection2Active and targetChar and isCharacterKnocked(targetChar) then
+            return
+        end
 
         if not targetChar or not targetHum or targetHum.Health <= 0 or not targetHrp or not targetHead then
             if isLoopkill then
+                return
+            elseif isProtectionRetaliating and (isProtectionActive or isProtection2Active) then
+                clearProtectionRetaliation(isProtection2Active and "Status: PROTECTION2 ON" or "Status: PROTECTION ON")
+                return
+            elseif isBringing then
                 return
             elseif not isManualTarget and not isGuardActive and not isStomping then
                 currentTarget = nil
@@ -1414,8 +2577,10 @@ RunService.RenderStepped:Connect(function()
             targetGoalCFrame = CFrame.new(targetPos + Vector3.new(0, 20, 0))
         end
 
-        myHrp.AssemblyLinearVelocity = Vector3.zero
-        myHrp.CFrame = targetGoalCFrame
+        if not (isGlueFollowActive and isGlueMovementActive()) then
+            myHrp.AssemblyLinearVelocity = Vector3.zero
+            myHrp.CFrame = targetGoalCFrame
+        end
     else
         isKnifeMode = false
         if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) and SilentAim.Enabled then
@@ -1430,10 +2595,9 @@ RunService.RenderStepped:Connect(function()
     local allPlayers = Players:GetPlayers()
     for i = 1, #allPlayers do
         local otherPlayer = allPlayers[i]
-        local oChar = getChar(otherPlayer)
-        if otherPlayer ~= LocalPlayer and oChar then
-            local targetRoot = oChar:FindFirstChild("HumanoidRootPart")
-            local targetHum = oChar:FindFirstChildOfClass("Humanoid")
+        if otherPlayer ~= LocalPlayer and otherPlayer.Character then
+            local targetRoot = otherPlayer.Character:FindFirstChild("HumanoidRootPart")
+            local targetHum = otherPlayer.Character:FindFirstChildOfClass("Humanoid")
             if targetRoot and targetHum then
                 if isKnifeMode and targetHum.Health > 0 and not isWhitelisted(otherPlayer) then
                     targetRoot.Size = Vector3.new(hitboxScaleSize, hitboxScaleSize, hitboxScaleSize)
@@ -1447,12 +2611,21 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    if not isFollowing or isHiding or isOrbiting then return end
+    refreshGlueSpot(myHrp, leaderHrp)
+
+    if not isFollowing or (isHiding and not hideCombat) or isOrbiting then
+        if isHiding and not (isOrbiting or isStomping or isLoopkill or isBringing or isGuardActive) then
+            applySkyHide()
+        end
+        return
+    end
 
     if leaderHrp then
-        local altIndex, totalAlts = getAltIndex()
-        local offset = getFormationOffset(formationMode, altIndex, totalAlts)
-        applyFormationFollow(myHrp, leaderHrp, offset)
+        if not (isGlueFollowActive and isGlueMovementActive()) then
+            local altIndex, totalAlts = getAltIndex()
+            local offset = getFormationOffset(formationMode, altIndex, totalAlts)
+            applyFormationFollow(myHrp, leaderHrp, offset)
+        end
     end
 end)
 
@@ -1495,4 +2668,11 @@ pcall(function()
     end)
 end)
 
-print("[Stando] Loaded OK")
+RunService.Heartbeat:Connect(function()
+    if isUnloaded then return end
+    pcall(runAntiStompTick)
+end)
+
+print("[Stando] Loaded OK (full suite)")
+
+print("[Stando] Script loaded OK")
