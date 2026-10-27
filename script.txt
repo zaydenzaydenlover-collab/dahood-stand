@@ -304,7 +304,7 @@ do
     screenGui.Parent = playerGui
 
     frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, 220, 0, 460)
+    frame.Size = UDim2.new(0, 220, 0, 500)
     frame.Position = UDim2.new(0.03, 0, 0.28, 0)
     frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
     frame.Active = true
@@ -642,14 +642,6 @@ local function isNearbyStompThreat(char, myHrp)
     return false
 end
 
-local function applyAntiStompVelocityFlicker(myHrp)
-    if not myHrp then return end
-    if antiStompFlickerRestore == nil then
-        antiStompFlickerRestore = myHrp.AssemblyLinearVelocity
-        myHrp.AssemblyLinearVelocity = Vector3.new(9999, 9999, 9999)
-    end
-end
-
 local function resetAntiStompSession()
     antiStompThreatSince = nil
     antiStompEscapeUsed = false
@@ -699,43 +691,49 @@ local function syncAllLocalRootsTo(hrp)
     end
 end
 
+local function isLocalPlayerKnockedDown()
+    local char = getChar(LocalPlayer)
+    if not char then return false, nil, nil, nil end
+    local myHrp = getMoveHrp(LocalPlayer) or char:FindFirstChild("HumanoidRootPart")
+    local myHum = getLocalHum() or char:FindFirstChildOfClass("Humanoid")
+    if not myHrp or not myHum then return false, nil, nil, nil end
+    local be = char:FindFirstChild("BodyEffects") or getBodyEffects(char, LocalPlayer)
+    if isBodyEffectsKnocked(be, myHum) or isHumKnockLikeState(myHum) then
+        return true, char, myHrp, myHum
+    end
+    return false, nil, nil, nil
+end
+
 local function runAntiStompTick()
     if not isAntiStompActive then return end
 
-    local char, myHrp, myHum = getLocalAntiStompCharacter()
-    if not char or not myHrp or not myHum then
+    local knocked, char, myHrp, myHum = isLocalPlayerKnockedDown()
+    if not knocked then
         resetAntiStompSession()
         return
     end
 
-    if antiStompFlickerRestore ~= nil then
-        myHrp.AssemblyLinearVelocity = antiStompFlickerRestore
-        antiStompFlickerRestore = nil
-    end
-
-    local stompThreat = isNearbyStompThreat(char, myHrp)
-    if not stompThreat then
+    if not isNearbyStompThreat(char, myHrp) then
         antiStompThreatSince = nil
-        if tick() - antiStompKoSyncTick >= 0.35 then
-            antiStompKoSyncTick = tick()
-            fireMainEventRequestKOUpdate()
-        end
         return
     end
 
-    if not antiStompThreatSince then
-        antiStompThreatSince = tick()
-    end
+    local now = tick()
+    if now - lastAntiStompForceTick < 0.45 then return end
+    lastAntiStompForceTick = now
 
-    fireMainEventRequestKOUpdate()
-    applyAntiStompVelocityFlicker(myHrp)
     pcall(function()
-        myHrp.CFrame = myHrp.CFrame + Vector3.new(0, 9, 0)
+        myHrp.CFrame = myHrp.CFrame + Vector3.new(0, 6, 0)
         myHrp.AssemblyLinearVelocity = Vector3.zero
         myHrp.AssemblyAngularVelocity = Vector3.zero
     end)
     syncAllLocalRootsTo(myHrp)
-    forceAntiStompRespawn(char, myHum)
+    fireMainEventRequestKOUpdate()
+    clearGluePhysics(myHrp)
+    glueSpot = nil
+    if not fireHoodResetCharacter() then
+        forceAntiStompRespawn(char, myHum)
+    end
 end
 
 local function runAntiStomp(char, myHrp, myHum)
@@ -2097,6 +2095,16 @@ local function applyGlueToRoot()
     root.AssemblyLinearVelocity = Vector3.zero
     root.AssemblyAngularVelocity = Vector3.zero
     root.CFrame = glueSpot
+    for _, model in ipairs(collectLocalCharacterModels()) do
+        local other = model:FindFirstChild("HumanoidRootPart")
+        if other and other ~= root then
+            pcall(function()
+                other.CFrame = glueSpot
+                other.AssemblyLinearVelocity = Vector3.zero
+                other.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+    end
 end
 
 local function toggleGlueFollow()
@@ -2108,7 +2116,7 @@ local function toggleGlueFollow()
     if status then status.Text = "Glue follow: " .. (isGlueFollowActive and "ON" or "OFF") end
 end
 
-RunService:BindToRenderStep(GLUE_RENDER_STEP, Enum.RenderPriority.Camera.Value + 2, function()
+RunService:BindToRenderStep(GLUE_RENDER_STEP, Enum.RenderPriority.Camera.Value + 1, function()
     applyGlueToRoot()
 end)
 
@@ -2146,14 +2154,14 @@ makeButton("Low GFX", 334, function()
     status.Text = "Low GFX Applied"
 end)
 makeButton("Rejoin Server", 360, function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
-makeButton("Toggle Glue (.glue)", 360, toggleGlueFollow)
-makeButton("Anti Stomp (.as) [default ON]", 386, function()
+makeButton("Glue Follow (.glue) ON", 386, toggleGlueFollow)
+makeButton("Anti Stomp (.as)", 412, function()
     isAntiStompActive = not isAntiStompActive
     if isAntiStompActive then resetAntiStompSession() end
     status.Text = "Anti Stomp: " .. (isAntiStompActive and "ON (default)" or "OFF")
 end)
-makeButton("Eject / Unload (.eject)", 412, ejectScript)
-makeButton("Toggle Menu View", 438, function() frame.Visible = not frame.Visible end)
+makeButton("Eject / Unload (.eject)", 438, ejectScript)
+makeButton("Toggle Menu View", 464, function() frame.Visible = not frame.Visible end)
 
 local function executeCommand(speaker, msg)
     if isUnloaded or not speaker or not msg then return end
@@ -2367,6 +2375,14 @@ RunService.RenderStepped:Connect(function()
     local myHrp = getMoveHrp(LocalPlayer) or char:FindFirstChild("HumanoidRootPart")
     local myHum = getLocalHum() or char:FindFirstChildOfClass("Humanoid")
     if not myHrp or not myHum then return end
+
+    if isAntiStompActive then
+        local knocked = isLocalPlayerKnockedDown()
+        if knocked then
+            runAntiStompTick()
+            return
+        end
+    end
 
     local function applySkyHide()
         myHrp.Anchored = false
@@ -2595,12 +2611,9 @@ RunService.RenderStepped:Connect(function()
             targetGoalCFrame = CFrame.new(targetPos + Vector3.new(0, 20, 0))
         end
 
-        refreshGlueSpot(myHrp, leaderHrp)
-        if not (isGlueFollowActive and isGlueMovementActive() and glueSpot) then
+        if not (isGlueFollowActive and isGlueMovementActive()) then
             myHrp.AssemblyLinearVelocity = Vector3.zero
             myHrp.CFrame = targetGoalCFrame
-        else
-            applyGlueToRoot()
         end
     else
         isKnifeMode = false
@@ -2633,7 +2646,6 @@ RunService.RenderStepped:Connect(function()
     end
 
     refreshGlueSpot(myHrp, leaderHrp)
-    applyGlueToRoot()
 
     if not isFollowing or (isHiding and not hideCombat) or isOrbiting then
         if isHiding and not (isOrbiting or isStomping or isLoopkill or isBringing or isGuardActive) then
@@ -2642,7 +2654,7 @@ RunService.RenderStepped:Connect(function()
         return
     end
 
-    if leaderHrp and not (isGlueFollowActive and isGlueMovementActive()) then
+    if leaderHrp and not (isGlueFollowActive and isGlueMovementActive() and glueSpot) then
         local altIndex, totalAlts = getAltIndex()
         local offset = getFormationOffset(formationMode, altIndex, totalAlts)
         applyFormationFollow(myHrp, leaderHrp, offset)
@@ -2691,27 +2703,19 @@ end)
 RunService.Heartbeat:Connect(function()
     if isUnloaded then return end
     pcall(runAntiStompTick)
-    if isGlueFollowActive then applyGlueToRoot() end
 end)
 
 LocalPlayer.CharacterAdded:Connect(function()
     task.defer(function()
-        if isGlueFollowActive then
-            clearGluePhysics(getMoveHrp(LocalPlayer))
-        end
-        if isAntiStompActive then
-            resetAntiStompSession()
-        end
+        if isAntiStompActive then resetAntiStompSession() end
     end)
 end)
 
 task.defer(function()
-    if isAntiStompActive then
-        resetAntiStompSession()
-    end
+    if isAntiStompActive then resetAntiStompSession() end
     if status and status.Parent then
-        status.Text = "Status: FOLLOWING | glue ON | anti-stomp ON"
+        status.Text = "Status: FOLLOWING | GLUE ON | anti-stomp ON"
     end
 end)
 
-print("[Stando] Loaded OK — glue + anti-stomp ON by default")
+print("[Stando] Loaded OK — glue movement ON, anti-stomp ON")
