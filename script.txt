@@ -414,6 +414,11 @@ local function getAimPart(char)
         or char:FindFirstChild("UpperTorso")
 end
 
+local function getOrbitPart(char)
+    if not char then return nil end
+    return char:FindFirstChild("HumanoidRootPart") or getAimPart(char)
+end
+
 local function getBestSilentTarget()
     if not SilentAim.Enabled then return nil end
 
@@ -1065,8 +1070,9 @@ local function buildCombatOrbitCFrame(targetPos, altIndex, totalAlts)
     return CFrame.new(goalPos, targetPos)
 end
 
-local function getGlueCombatGoalCFrame(targetHead, altIndex, totalAlts)
-    return buildCombatOrbitCFrame(targetHead.Position, altIndex, totalAlts)
+local function getGlueCombatGoalCFrame(orbitPart, altIndex, totalAlts)
+    if not orbitPart then return nil end
+    return buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
 end
 
 local function getGlueStompGoalCFrame(torso, altIndex, totalAlts)
@@ -1140,11 +1146,11 @@ local function runGlueHeartbeat()
         if isOrbiting and currentTarget and not isWhitelisted(currentTarget) then
             local theirChar = getChar(currentTarget) or currentTarget.Character
             th = theirChar and theirChar:FindFirstChild("HumanoidRootPart")
-            local targetHead = theirChar and (theirChar:FindFirstChild("Head") or th)
-            if th and targetHead then
+            local orbitPart = getOrbitPart(theirChar)
+            if th and orbitPart then
                 local torso = theirChar:FindFirstChild("UpperTorso") or theirChar:FindFirstChild("Torso")
                 pin = (torso and torso.AssemblyRootPart) or th
-                glueSpot = getGlueCombatGoalCFrame(targetHead, altIndex, totalAlts)
+                glueSpot = getGlueCombatGoalCFrame(orbitPart, altIndex, totalAlts)
             end
         elseif isFollowing and not isStomping then
             local host = getLeader()
@@ -1161,11 +1167,11 @@ local function runGlueHeartbeat()
             if stompPlayer and not isWhitelisted(stompPlayer) then
                 local theirChar = getChar(stompPlayer)
                 th = theirChar and theirChar:FindFirstChild("HumanoidRootPart")
-                local targetHead = theirChar and (theirChar:FindFirstChild("Head") or th)
-                if th and targetHead then
+                local orbitPart = getOrbitPart(theirChar)
+                if th and orbitPart then
                     local torso = theirChar:FindFirstChild("UpperTorso") or theirChar:FindFirstChild("Torso")
                     pin = (torso and torso.AssemblyRootPart) or th
-                    glueSpot = getGlueCombatGoalCFrame(targetHead, altIndex, totalAlts)
+                    glueSpot = getGlueCombatGoalCFrame(orbitPart, altIndex, totalAlts)
                 end
             end
         else
@@ -1597,7 +1603,8 @@ RunService.RenderStepped:Connect(function()
         local targetChar = getChar(currentTarget) or currentTarget.Character
         local targetHum = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
         local targetHrp = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
-        local targetHead = targetChar and (getAimPart(targetChar) or targetHrp)
+        local orbitPart = getOrbitPart(targetChar)
+        local aimPart = getAimPart(targetChar) or targetHrp
 
         if isGuardActive and not isManualTarget and targetChar and isCharacterKnocked(targetChar) then
             currentTarget = nil
@@ -1607,7 +1614,7 @@ RunService.RenderStepped:Connect(function()
             return
         end
 
-        if not targetChar or not targetHum or targetHum.Health <= 0 or not targetHrp or not targetHead then
+        if not targetChar or not targetHum or targetHum.Health <= 0 or not targetHrp or not orbitPart then
             if isLoopkill then
                 return
             elseif not isManualTarget and not isGuardActive and not isStomping then
@@ -1630,7 +1637,7 @@ RunService.RenderStepped:Connect(function()
             equipTool(currentWeapon)
         end
 
-        Camera.CFrame = CFrame.new(Camera.CFrame.Position, targetHead.Position)
+        Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPart.Position)
 
         if activeTool then
             local tName = string.lower(activeTool.Name)
@@ -1645,13 +1652,13 @@ RunService.RenderStepped:Connect(function()
                     pcall(function() activeTool:Activate() end)
                     local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
                     if mainEvent and activeTool:FindFirstChild("Handle") then
-                        mainEvent:FireServer("UpdateMousePos", targetHead.Position)
+                        mainEvent:FireServer("UpdateMousePos", aimPart.Position)
                         mainEvent:FireServer(
                             "ShootGun",
                             activeTool.Handle,
                             activeTool.Handle.CFrame.Position,
-                            targetHead.Position,
-                            targetHead,
+                            aimPart.Position,
+                            aimPart,
                             Vector3.new(0, 0, -1)
                         )
                     end
@@ -1660,12 +1667,11 @@ RunService.RenderStepped:Connect(function()
             end
         end
 
-        local targetPos = targetHead.Position
         local altIndex, totalAlts = getAltIndex()
 
         if not isGlueFollowActive or not glueSpot then
             myHrp.AssemblyLinearVelocity = Vector3.zero
-            myHrp.CFrame = buildCombatOrbitCFrame(targetPos, altIndex, totalAlts)
+            myHrp.CFrame = buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
         end
     else
         isKnifeMode = false
