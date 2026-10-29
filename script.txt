@@ -1252,7 +1252,10 @@ local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
     end
 
     local radius = math.clamp(FORMATION_RING_RADIUS + (totalAlts - 1) * 0.15, 4.5, 7)
-    if mode ~= "circle" and mode ~= "shield" and mode ~= "none" then
+    if mode ~= "circle" and mode ~= "shield" and mode ~= "none" and mode ~= "sit" then
+        mode = "circle"
+    end
+    if mode == "sit" then
         mode = "circle"
     end
     if mode == "shield" then
@@ -1353,6 +1356,15 @@ local function fireGrabbing()
         local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
         if mainEvent then
             mainEvent:FireServer("Grabbing")
+        end
+    end)
+end
+
+local function fireSitEmote()
+    pcall(function()
+        local mainEvent = ReplicatedStorage:WaitForChild("MainEvent", 5)
+        if mainEvent then
+            mainEvent:FireServer("Emote", "SitDown")
         end
     end)
 end
@@ -1787,6 +1799,32 @@ local function executeCommand(speaker, msg)
         isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
         isGlueFollowActive = true
         status.Text = "Formation: Shield"
+    elseif cleanCmd == "sit" then
+        formationMode = "sit"
+        isFollowing = true
+        isHiding = false
+        isOrbiting = false
+        isLoopkill = false
+        isStomping = false
+        isBringing = false
+        bringTargetName = nil
+        bringPhase = nil
+        isManualTarget = false
+        isGuardActive = false
+        if LocalPlayer ~= speaker and isWhitelisted(LocalPlayer) then
+            local host = getLeader()
+            if not host or LocalPlayer ~= host then
+                local altIndex = 1
+                pcall(function()
+                    altIndex = select(1, getAltIndex())
+                end)
+                task.delay((altIndex - 1) * 0.1, function()
+                    if isUnloaded then return end
+                    fireSitEmote()
+                end)
+            end
+        end
+        status.Text = "Formation: Sit"
     elseif cleanCmd == "hide" then
         stopAndHide()
     elseif cleanCmd == "walk" or cleanCmd == "stand" or cleanCmd == "follow" then
