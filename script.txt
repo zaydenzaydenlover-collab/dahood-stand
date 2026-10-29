@@ -1582,6 +1582,38 @@ makeButton("Toggle Glue (.glue)", 438, function() toggleGlueFollow() end)
 makeButton("Anti Stomp (.as)", 464, function() toggleAntiStomp() end)
 makeButton("Toggle Menu View", 490, function() frame.Visible = not frame.Visible end)
 
+local function sendAltChat(text)
+    text = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if text == "" then return false end
+    if #text > 200 then
+        text = string.sub(text, 1, 200)
+    end
+    local sent = false
+    pcall(function()
+        local channels = TextChatService:FindFirstChild("TextChannels")
+        local general = channels and channels:FindFirstChild("RBXGeneral")
+        if general and general.SendAsync then
+            general:SendAsync(text)
+            sent = true
+        end
+    end)
+    if not sent then
+        pcall(function()
+            local chatEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+            if chatEvents then
+                chatEvents:FireServer("SayMessageRequest", text, "All")
+                sent = true
+            end
+        end)
+    end
+    if not sent then
+        pcall(function()
+            LocalPlayer:Chat(text)
+        end)
+    end
+    return true
+end
+
 local function executeCommand(speaker, msg)
     if isUnloaded or not speaker or not msg then return end
 
@@ -1815,6 +1847,32 @@ local function executeCommand(speaker, msg)
         else
             toggleAntiStomp()
         end
+    elseif cleanCmd == "say" or cleanCmd == "chat" then
+        local sayText = msg:match("^[%./!]*[sS][aA][yY]%s+(.*)$")
+            or msg:match("^[%./!]*[cC][hH][aA][tT]%s+(.*)$")
+        if not sayText or sayText:gsub("%s", "") == "" then
+            status.Text = "Say: usage say hello"
+            return
+        end
+        if LocalPlayer == speaker then
+            return
+        end
+        if not isWhitelisted(LocalPlayer) then
+            return
+        end
+        local host = getLeader()
+        if host and LocalPlayer == host then
+            return
+        end
+        local altIndex = 1
+        pcall(function()
+            altIndex = select(1, getAltIndex())
+        end)
+        task.delay((altIndex - 1) * 0.12, function()
+            if isUnloaded then return end
+            sendAltChat(sayText)
+        end)
+        status.Text = "Say: " .. string.sub(sayText, 1, 40)
     elseif cleanCmd == "rejoin" or cleanCmd == "rj" then
         TeleportService:Teleport(game.PlaceId, LocalPlayer)
     elseif cleanCmd == "leave" then
