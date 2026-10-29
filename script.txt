@@ -23,7 +23,7 @@ local RunService = game:GetService("RunService")
 local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
-local OWNER_NAME = "dudasgoodpuppy9ghlhk"
+local OWNER_NAME = "dudasgoodpuppy21ax97"
 local isUnloaded = false
 
 local WHITELISTED_USERS = {
