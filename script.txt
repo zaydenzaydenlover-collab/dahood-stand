@@ -208,11 +208,6 @@ local formationMode = "none"
 
 local isOrbiting = false
 local isHiding = false
-local voidHideLastPos = nil
-local voidHideWasOn = false
-local VOID_HIDE_OFFSET = 9999999999999999999
-local VOID_HIDE_PUSH_WRITES = 5000
-local VOID_HIDE_RESTORE_WRITES = 10000
 local isFollowing = true
 local isLoopkill = false
 local loopkillTargetName = nil
@@ -248,7 +243,8 @@ local FORMATION_SHIELD_RADIUS = 1
 local FORMATION_BOX_HALF_W = 5
 local FORMATION_BOX_HALF_D = 4
 local FORMATION_TRI_SIDE = 8
-local FORMATION_WEDGE_STEP = 2.75
+local FORMATION_WEDGE_STEP = 3.5
+local FORMATION_WEDGE_SPREAD = 0.92
 local COMBAT_ORBIT_RADIUS = 5.4
 local COMBAT_ORBIT_HEIGHT = 14
 local GLUE_RENDER_STEP = "StandoGlueFollow"
@@ -276,7 +272,6 @@ local function isHoldingGun()
     if not char then return false end
     local tool = char:FindFirstChildOfClass("Tool")
     if not tool then return false end
-    
     local tName = string.lower(tool.Name)
     if tName:find("knife") or tName:find("pitchfork") or tName:find("stopsign") or tName:find("whip") or tName:find("fist") or tName:find("combat") then
         return false
@@ -405,16 +400,17 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- KRAVIX SILENT AIM (HEAD LOCK)
+-- KRAVIX SILENT AIM (HEAD LOCK, 0 PREDICTION)
 -- ==========================================
 
 local SilentAim = {
     Enabled = true,
     FOV = 350,
-    HitPart = "HumanoidRootPart",
+    Prediction = 0,
+    HitPart = "Head",
     MaxDistance = 1000,
     ShowFOV = true,
-    FOVColor = Color3.fromRGB(0, 255, 140)
+    FOVColor = Color3.fromRGB(0, 255, 140),
 }
 
 local fovCircle = nil
@@ -434,9 +430,10 @@ local function getAimPart(char)
     if not char then return nil end
     local name = SilentAim.HitPart or "HumanoidRootPart"
     return char:FindFirstChild(name)
-        or char:FindFirstChild("Torso")
         or char:FindFirstChild("HumanoidRootPart")
         or char:FindFirstChild("UpperTorso")
+        or char:FindFirstChild("Torso")
+        or char:FindFirstChild("Head")
 end
 
 local function getOrbitPart(char)
@@ -447,19 +444,19 @@ end
 local function getBestSilentTarget()
     if not SilentAim.Enabled then return nil end
 
-    if currentTarget and currentTarget.Character and not isWhitelisted(currentTarget) then
+    if currentTarget and not isWhitelisted(currentTarget) then
         local char = getChar(currentTarget) or currentTarget.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
-        local head = char and getAimPart(char)
+        local part = char and getAimPart(char)
 
-        if hum and hum.Health > 0 and head then
+        if hum and hum.Health > 0 and part then
             local be = char:FindFirstChild("BodyEffects")
             local isKO = be and (
                 (be:FindFirstChild("K.O") and be["K.O"].Value == true) or
                 (be:FindFirstChild("Dead") and be.Dead.Value == true)
             )
             if not isKO then
-                return { Part = head, Character = char }
+                return { Part = part, Character = char }
             end
         end
     end
@@ -476,10 +473,10 @@ local function getBestSilentTarget()
         if player ~= LocalPlayer and not isWhitelisted(player) then
             local char = getChar(player) or player.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local head = char and getAimPart(char)
+            local part = char and getAimPart(char)
 
-            if hum and hum.Health > 0 and head then
-                local worldDist = (head.Position - localHrp.Position).Magnitude
+            if hum and hum.Health > 0 and part then
+                local worldDist = (part.Position - localHrp.Position).Magnitude
                 if worldDist <= SilentAim.MaxDistance then
                     local be = char:FindFirstChild("BodyEffects")
                     local isKO = be and (
@@ -488,13 +485,13 @@ local function getBestSilentTarget()
                     )
 
                     if not isKO then
-                        local screenPos, onScreen = Camera:WorldToViewportPoint(head.Position)
+                        local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
                         if onScreen then
                             local screen2D = Vector2.new(screenPos.X, screenPos.Y)
                             local dist = (screen2D - mousePos).Magnitude
                             if dist <= shortestDist then
                                 shortestDist = dist
-                                bestTarget = { Part = head, Character = char }
+                                bestTarget = { Part = part, Character = char }
                             end
                         end
                     end
@@ -544,7 +541,7 @@ pcall(function()
         local oldNamecall
         oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local method = getnamecallmethod()
-            local args = {...}
+            local args = { ... }
             if not checkcaller() and SilentAim.Enabled and (method == "FireServer" or method == "fireServer") then
                 local cmd = tostring(args[1])
                 if cmd == "UpdateMousePos" or cmd == "UpdateMousePosI" or cmd == "MousePos" then
@@ -852,55 +849,13 @@ local function stopAndHide()
     local char = LocalPlayer.Character
     if char and char:FindFirstChild("HumanoidRootPart") then
         local hrp = char.HumanoidRootPart
-        if not voidHideLastPos then
-            voidHideLastPos = hrp.Position
-        end
         hrp.Anchored = false
         hrp.AssemblyLinearVelocity = Vector3.zero
         hrp.AssemblyAngularVelocity = Vector3.zero
     end
-    status.Text = "Status: VOID HIDE"
+    status.Text = "Status: SKY ZIP HIDE (FAST MOVE)"
     status.TextColor3 = Color3.fromRGB(255, 165, 0)
 end
-
-task.spawn(function()
-    while not isUnloaded do
-        if isHiding then
-            local char = getChar(LocalPlayer)
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            if hrp then
-                voidHideWasOn = true
-                for i = 1, VOID_HIDE_PUSH_WRITES do
-                    if not isHiding or isUnloaded then break end
-                    local p = hrp.Position
-                    hrp.CFrame = CFrame.new(
-                        p.X + VOID_HIDE_OFFSET,
-                        p.Y + VOID_HIDE_OFFSET,
-                        p.Z + VOID_HIDE_OFFSET
-                    )
-                end
-                task.wait(0.016)
-            else
-                task.wait(0.02)
-            end
-        else
-            task.wait(0.02)
-            local char = getChar(LocalPlayer)
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            if hrp then
-                if voidHideWasOn and voidHideLastPos then
-                    for i = 1, VOID_HIDE_RESTORE_WRITES do
-                        hrp.CFrame = CFrame.new(voidHideLastPos)
-                        hrp.AssemblyLinearVelocity = Vector3.zero
-                        hrp.AssemblyAngularVelocity = Vector3.zero
-                    end
-                    voidHideWasOn = false
-                end
-                voidHideLastPos = hrp.Position
-            end
-        end
-    end
-end)
 
 local function startStand()
     isFollowing = true
@@ -1199,36 +1154,38 @@ local function getTriangleWorldPosition(leaderHrp, altIndex, totalAlts, side)
     return lerpVec3(vLeft, vApex, t)
 end
 
-local function buildWedgeSlotPositions(leaderHrp, totalAlts)
+-- Host = apex; alts fill rows behind in a V (pair left/right, odd alt centers last row).
+local function getWedgeWorldPosition(leaderHrp, altIndex, totalAlts)
     local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
     local step = FORMATION_WEDGE_STEP
-    local slots = {}
-    slots[#slots + 1] = center + flatLook * (step * 0.85)
+    local spread = FORMATION_WEDGE_SPREAD
+    totalAlts = math.max(1, totalAlts)
+    altIndex = math.clamp(altIndex, 1, totalAlts)
 
-    local maxDepth = math.max(6, math.ceil(totalAlts / 2))
-    for depth = 1, maxDepth do
+    local depth = 1
+    local slot = 1
+    while slot <= totalAlts do
         local back = depth * step
-        slots[#slots + 1] = center - flatLook * back - flatRight * back
-        slots[#slots + 1] = center - flatLook * back + flatRight * back
-        if depth == 3 or depth == 4 then
-            slots[#slots + 1] = center - flatLook * back
+        if slot + 1 <= totalAlts then
+            local wing = back * spread
+            if altIndex == slot then
+                return center - flatLook * back - flatRight * wing
+            end
+            if altIndex == slot + 1 then
+                return center - flatLook * back + flatRight * wing
+            end
+            slot = slot + 2
+            depth = depth + 1
+        else
+            if altIndex == slot then
+                return center - flatLook * back
+            end
+            slot = slot + 1
+            depth = depth + 1
         end
     end
 
-    while #slots < totalAlts do
-        maxDepth = maxDepth + 1
-        local back = maxDepth * step
-        slots[#slots + 1] = center - flatLook * back - flatRight * back
-        slots[#slots + 1] = center - flatLook * back + flatRight * back
-    end
-
-    return slots
-end
-
-local function getWedgeWorldPosition(leaderHrp, altIndex, totalAlts)
-    local slots = buildWedgeSlotPositions(leaderHrp, totalAlts)
-    local idx = math.clamp(altIndex, 1, totalAlts)
-    return slots[idx] or slots[#slots]
+    return center - flatLook * step
 end
 
 local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
@@ -1579,7 +1536,7 @@ makeButton("Toggle Sync Dance (.dance)", 308, function()
     if not isDanceEnabled then stopSyncDance() end
     status.Text = "Sync Dance: " .. (isDanceEnabled and "ON" or "OFF")
 end)
-makeButton("Void Hide (.hide)", 334, stopAndHide)
+makeButton("Stop & Sky-Zip Hide (.hide)", 334, stopAndHide)
 makeButton("Low GFX", 360, function()
     local descendants = workspace:GetDescendants()
     for i = 1, #descendants do
@@ -1932,7 +1889,6 @@ RunService.RenderStepped:Connect(function()
     local myHum = char:FindFirstChildOfClass("Humanoid")
     if not myHrp or not myHum then return end
 
-    -- Safe ADS for guns
     if isHoldingGun() and not isHiding and myHum.Health > 0 then
         setRightClick(true)
     else
@@ -1940,6 +1896,18 @@ RunService.RenderStepped:Connect(function()
     end
 
     if isHiding then
+        myHrp.Anchored = false
+        myHrp.AssemblyLinearVelocity = Vector3.zero
+        myHrp.AssemblyAngularVelocity = Vector3.zero
+        local timeVal = tick() * 15
+        local altIndex, totalAlts = getAltIndex()
+        local offsetAngle = ((altIndex - 1) / math.max(1, totalAlts)) * (2 * math.pi)
+
+        local rx = math.sin(timeVal + offsetAngle) * 45000
+        local rz = math.cos(timeVal * 0.9 + offsetAngle) * 45000
+        local ry = 50000 + (math.sin(timeVal * 2 + altIndex) * 3000)
+
+        myHrp.CFrame = CFrame.new(rx, ry, rz)
         return
     end
 
@@ -2111,7 +2079,6 @@ RunService.RenderStepped:Connect(function()
         local targetHum = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
         local targetHrp = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
         local orbitPart = getOrbitPart(targetChar)
-        local aimPart = getAimPart(targetChar) or targetHrp
 
         if isGuardActive and not isManualTarget and targetChar and isCharacterKnocked(targetChar) then
             currentTarget = nil
@@ -2148,7 +2115,10 @@ RunService.RenderStepped:Connect(function()
             equipTool(currentWeapon)
         end
 
-        Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPart.Position)
+        local aimPart = getAimPart(targetChar) or targetChar:FindFirstChild("Head") or targetHrp
+        if aimPart then
+            Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPart.Position)
+        end
 
         if activeTool then
             local tName = string.lower(activeTool.Name)
@@ -2158,7 +2128,7 @@ RunService.RenderStepped:Connect(function()
             else
                 isKnifeMode = false
                 local now = tick()
-                if now - lastAutoFireTick >= 0.13 then
+                if aimPart and now - lastAutoFireTick >= 0.13 then
                     lastAutoFireTick = now
                     pcall(function() activeTool:Activate() end)
                     local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
