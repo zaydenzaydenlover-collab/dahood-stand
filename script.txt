@@ -20,6 +20,7 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local VirtualUser = game:GetService("VirtualUser")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
 local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
@@ -46,6 +47,8 @@ local WHITELISTED_USERS = {
     ["DIGASGAMES1"] = true,
     ["lucythebest4life"] = true,
     ["wveaklur"] = true,
+    ["dandysworldlegend9"] = true,
+    ["MattyBRapsFan20177"] = true,
 }
 
 local function isWhitelisted(player)
@@ -71,6 +74,8 @@ local function clearCombatIfTarget(player)
     isBringing = false
     bringTargetName = nil
     bringPhase = nil
+    isStacking = false
+    stackTargetName = nil
     isManualTarget = false
     currentTarget = nil
     isFollowing = true
@@ -92,6 +97,10 @@ local function addRuntimeWhitelist(player)
     if loopkillTargetName and string.lower(loopkillTargetName) == string.lower(player.Name) then
         isLoopkill = false
         loopkillTargetName = nil
+    end
+    if stackTargetName and string.lower(stackTargetName) == string.lower(player.Name) then
+        isStacking = false
+        stackTargetName = nil
     end
     return true, "Whitelisted: " .. player.Name
 end
@@ -220,6 +229,8 @@ local bringPhaseTick = 0
 local BRING_HOVER_SEC = 3
 local BRING_DROP_SEC = 0.8
 local isManualTarget = false
+local isStacking = false
+local stackTargetName = nil
 local isGuardActive = false
 local isGlueFollowActive = true
 local glueDesync = false
@@ -247,6 +258,7 @@ local FORMATION_WEDGE_STEP = 3.5
 local FORMATION_WEDGE_SPREAD = 0.92
 local COMBAT_ORBIT_RADIUS = 5.4
 local COMBAT_ORBIT_HEIGHT = 14
+local STACK_ORBIT_RADIUS = 2.85
 local GLUE_RENDER_STEP = "StandoGlueFollow"
 
 -- ==========================================
@@ -631,7 +643,7 @@ local function shouldSkipAntiStomp()
 end
 
 local function isCombatTaskActive()
-    return isStomping or isBringing or isLoopkill or isOrbiting or isManualTarget
+    return isStomping or isBringing or isLoopkill or isStacking or isOrbiting or isManualTarget
 end
 
 local function triggerForceReset()
@@ -802,6 +814,8 @@ local function fullStopAndReturn()
     isBringing = false
     bringTargetName = nil
     bringPhase = nil
+    isStacking = false
+    stackTargetName = nil
     isManualTarget = false
     isGuardActive = false
     currentTarget = nil
@@ -868,6 +882,8 @@ local function startStand()
     isBringing = false
     bringTargetName = nil
     bringPhase = nil
+    isStacking = false
+    stackTargetName = nil
     isManualTarget = false
     isGuardActive = false
     currentTarget = nil
@@ -890,6 +906,8 @@ local function toggleGKill()
     isBringing = false
     bringTargetName = nil
     bringPhase = nil
+    isStacking = false
+    stackTargetName = nil
     isManualTarget = false
     if not isGuardActive then
         currentTarget = nil
@@ -1027,6 +1045,7 @@ local function getFormationRoster()
 end
 
 local function getAltIndex()
+    local host = getLeader()
     local _, alts = getFormationRoster()
     local n = #alts
     if n < 1 then return 1, 1 end
@@ -1035,7 +1054,16 @@ local function getAltIndex()
             return i, n
         end
     end
-    return 1, n
+    local idx = 1
+    for i = 1, n do
+        if alts[i].UserId < LocalPlayer.UserId then
+            idx = idx + 1
+        end
+    end
+    if isWhitelisted(LocalPlayer) and LocalPlayer ~= host then
+        return idx, n + 1
+    end
+    return idx, math.max(n, idx)
 end
 
 local function getHostFlatBasis(leaderHrp)
@@ -1286,14 +1314,15 @@ end
 
 local function buildCombatOrbitCFrame(targetPos, altIndex, totalAlts)
     totalAlts = math.max(1, totalAlts)
+    local orbitRadius = (isStacking and STACK_ORBIT_RADIUS) or COMBAT_ORBIT_RADIUS
     if standPositionMode == "hidden" then
         return CFrame.new(targetPos - Vector3.new(0, 5, 0), targetPos)
     end
     local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
     local attackOffset = Vector3.new(
-        math.cos(spreadAngle) * COMBAT_ORBIT_RADIUS,
+        math.cos(spreadAngle) * orbitRadius,
         0,
-        math.sin(spreadAngle) * COMBAT_ORBIT_RADIUS
+        math.sin(spreadAngle) * orbitRadius
     )
     local yLift = 0
     if standPositionMode == "above" or standPositionMode == "sky" then
@@ -1583,11 +1612,208 @@ local function sendAltChat(text)
     return true
 end
 
-local function executeCommand(speaker, msg)
-    if isUnloaded or not speaker or not msg then return end
+local function getCommandTargetQuery(args, startAt)
+    startAt = startAt or 2
+    if #args < startAt then return nil end
+    return table.concat(args, " ", startAt)
+end
 
-    local isOwner = (string.lower(speaker.Name) == string.lower(OWNER_NAME) or string.lower(speaker.DisplayName) == string.lower(OWNER_NAME))
-    local isAuthorized = isOwner or (grantedUser and speaker == grantedUser)
+-- ==========================================
+-- DISCORD (webhook out + optional bot poll in)
+-- Webhooks cannot read messages; set getgenv().DiscordBotToken + DiscordChannelId to command from Discord.
+-- ==========================================
+
+local discordProcessedIds = {}
+local discordBootstrapped = false
+local discordLastSeenSnowflake = "0"
+
+local function getDiscordWebhookUrl()
+    local url = getgenv and getgenv().DiscordWebhook
+    if type(url) == "string" and url:find("^https://discord%.com/api/webhooks/") then
+        return url
+    end
+    return nil
+end
+
+local function isDiscordReporterAlt()
+    local leader = getLeader()
+    if leader then
+        return LocalPlayer == leader
+    end
+    if not ownerPlayer then
+        ownerPlayer = findPlayer(OWNER_NAME)
+    end
+    return ownerPlayer == LocalPlayer
+end
+
+local function getHttpRequestFn()
+    if typeof(request) == "function" then return request end
+    if typeof(http_request) == "function" then return http_request end
+    if syn and typeof(syn.request) == "function" then return syn.request end
+    if http and typeof(http.request) == "function" then return http.request end
+    return nil
+end
+
+local function discordRequest(method, url, headers, body)
+    local reqFn = getHttpRequestFn()
+    if not reqFn then
+        return nil, "no request/http"
+    end
+    local ok, res = pcall(function()
+        return reqFn({
+            Url = url,
+            Method = method,
+            Headers = headers or {},
+            Body = body,
+        })
+    end)
+    if not ok then
+        return nil, res
+    end
+    if res.Success and res.StatusCode >= 200 and res.StatusCode < 300 then
+        return res.Body, nil
+    end
+    return res.Body, "HTTP " .. tostring(res.StatusCode)
+end
+
+local function sendDiscordWebhook(content, embedFields)
+    local webhook = getDiscordWebhookUrl()
+    if not webhook or not isDiscordReporterAlt() then return end
+    content = tostring(content or "")
+    if #content > 1900 then
+        content = string.sub(content, 1, 1900) .. "..."
+    end
+    local payload = {
+        username = "Stando",
+        content = content,
+    }
+    if embedFields then
+        payload.embeds = { {
+            title = "Stando",
+            color = 5763719,
+            fields = embedFields,
+            footer = { text = LocalPlayer.Name .. " @ " .. game.JobId },
+        } }
+    end
+    local body = HttpService:JSONEncode(payload)
+    discordRequest("POST", webhook, { ["Content-Type"] = "application/json" }, body)
+end
+
+local function getDiscordAllowedUserIds()
+    local ids = getgenv and getgenv().DiscordAllowedUserIds
+    if type(ids) == "table" and #ids > 0 then
+        return ids
+    end
+    local single = getgenv and getgenv().DiscordOwnerUserId
+    if single then
+        return { tostring(single) }
+    end
+    return nil
+end
+
+local function isDiscordUserAllowed(authorId)
+    local allowed = getDiscordAllowedUserIds()
+    if not allowed then
+        return true
+    end
+    local idStr = tostring(authorId)
+    for i = 1, #allowed do
+        if tostring(allowed[i]) == idStr then
+            return true
+        end
+    end
+    return false
+end
+
+local function snowflakeNewer(a, b)
+    a = tostring(a or "0")
+    b = tostring(b or "0")
+    if #a ~= #b then
+        return #a > #b
+    end
+    return a > b
+end
+
+local function getDiscordAuthorityPlayer()
+    if not ownerPlayer then
+        ownerPlayer = findPlayer(OWNER_NAME)
+    end
+    return ownerPlayer
+end
+
+local function pollDiscordCommands()
+    if isUnloaded then return end
+    local token = getgenv and getgenv().DiscordBotToken
+    local channelId = getgenv and getgenv().DiscordChannelId
+    if type(token) ~= "string" or token == "" then return end
+    if type(channelId) ~= "string" and type(channelId) ~= "number" then return end
+
+    local url = "https://discord.com/api/v10/channels/" .. tostring(channelId) .. "/messages?limit=8"
+    local body, err = discordRequest("GET", url, {
+        ["Authorization"] = "Bot " .. token,
+        ["Content-Type"] = "application/json",
+    }, nil)
+    if not body then return end
+
+    local ok, messages = pcall(function()
+        return HttpService:JSONDecode(body)
+    end)
+    if not ok or type(messages) ~= "table" then return end
+
+    if not discordBootstrapped then
+        for i = 1, #messages do
+            local mid = messages[i].id
+            if snowflakeNewer(mid, discordLastSeenSnowflake) then
+                discordLastSeenSnowflake = mid
+            end
+        end
+        discordBootstrapped = true
+        return
+    end
+
+    for i = #messages, 1, -1 do
+        local m = messages[i]
+        local mid = m and m.id
+        if mid and not discordProcessedIds[mid] and snowflakeNewer(mid, discordLastSeenSnowflake) then
+            discordProcessedIds[mid] = true
+            discordLastSeenSnowflake = mid
+
+            local author = m.author
+            if author and not author.bot and m.content and m.content ~= "" then
+                if isDiscordUserAllowed(author.id) then
+                    local authPlayer = getDiscordAuthorityPlayer()
+                    if authPlayer then
+                        sendDiscordWebhook("`" .. LocalPlayer.Name .. "` running: `" .. m.content .. "`")
+                        executeCommand(authPlayer, m.content, { fromDiscord = true })
+                        task.defer(function()
+                            task.wait(0.08)
+                            if status and status.Parent then
+                                sendDiscordWebhook("→ " .. tostring(status.Text))
+                            end
+                        end)
+                    end
+                end
+            end
+        end
+    end
+end
+
+task.spawn(function()
+    task.wait(2)
+    while not isUnloaded do
+        pcall(pollDiscordCommands)
+        local interval = (getgenv and tonumber(getgenv().DiscordPollSeconds)) or 2.5
+        task.wait(math.clamp(interval, 1.5, 10))
+    end
+end)
+
+local function executeCommand(speaker, msg, opts)
+    opts = opts or {}
+    if isUnloaded or not msg then return end
+    if not opts.fromDiscord and not speaker then return end
+
+    local isOwner = speaker and (string.lower(speaker.Name) == string.lower(OWNER_NAME) or string.lower(speaker.DisplayName) == string.lower(OWNER_NAME))
+    local isAuthorized = opts.fromDiscord or isOwner or (grantedUser and speaker == grantedUser)
     if not isAuthorized then return end
 
     local args = {}
@@ -1638,6 +1864,8 @@ local function executeCommand(speaker, msg)
     elseif cleanCmd == "loopkill" or cleanCmd == "lk" then
         local t = findPlayer(param)
         if t and not isWhitelisted(t) then
+            isStacking = false
+            stackTargetName = nil
             loopkillTargetName = t.Name
             isLoopkill = true
             isStomping = false
@@ -1653,6 +1881,46 @@ local function executeCommand(speaker, msg)
             isHiding = false
             formationMode = "none"
             status.Text = "Status: LOOPKILLING " .. t.Name
+        end
+    elseif cleanCmd == "stack" or cleanCmd == "stk" or cleanCmd == "unstack" then
+        local targetQuery = getCommandTargetQuery(args, 2)
+        if cleanCmd == "unstack" or not targetQuery or targetQuery == "" then
+            isStacking = false
+            stackTargetName = nil
+            if isOrbiting and isManualTarget and not isLoopkill and not isStomping and not isBringing then
+                fullStopAndReturn()
+            else
+                status.Text = "Stack: OFF"
+            end
+        else
+            local t = findPlayer(targetQuery)
+            if t and not isWhitelisted(t) then
+                stackTargetName = t.Name
+                isStacking = true
+                isLoopkill = false
+                loopkillTargetName = nil
+                isStomping = false
+                stompTargetName = nil
+                isBringing = false
+                bringTargetName = nil
+                bringPhase = nil
+                isManualTarget = true
+                isGuardActive = false
+                currentTarget = t
+                isOrbiting = true
+                isFollowing = false
+                isHiding = false
+                formationMode = "none"
+                isGlueFollowActive = true
+                if not currentWeapon then
+                    currentWeapon = "Revolver"
+                    attackSubMode = "combat"
+                end
+                equipTool(currentWeapon or "Revolver")
+                status.Text = "Status: STACK " .. t.Name
+            else
+                status.Text = "Stack: player not found!"
+            end
         end
     elseif cleanCmd == "stomp" or cleanCmd == "s" then
         local t = findPlayer(param)
@@ -2016,7 +2284,7 @@ RunService.RenderStepped:Connect(function()
     local leader = getLeader()
     local leaderHrp = getLeaderHrp()
 
-    if isGuardActive and not isManualTarget and not isLoopkill and not isStomping and not isBringing and not isHiding then
+    if isGuardActive and not isManualTarget and not isLoopkill and not isStacking and not isStomping and not isBringing and not isHiding then
         if leaderHrp then
             local nearestEnemy = nil
             local shortestDist = 50.0
@@ -2056,6 +2324,15 @@ RunService.RenderStepped:Connect(function()
         currentTarget = findPlayer(loopkillTargetName)
     end
 
+    if isStacking and stackTargetName then
+        local stackPlayer = findPlayer(stackTargetName)
+        if stackPlayer and not isWhitelisted(stackPlayer) then
+            currentTarget = stackPlayer
+            isOrbiting = true
+            isFollowing = false
+        end
+    end
+
     -- Combat & Orbiting
     local activeTool = char:FindFirstChildOfClass("Tool")
     local isKnifeMode = (attackSubMode == "knife" or attackSubMode == "pitch" or attackSubMode == "sign" or attackSubMode == "whip")
@@ -2089,7 +2366,7 @@ RunService.RenderStepped:Connect(function()
         end
 
         if not targetChar or not targetHum or targetHum.Health <= 0 or not targetHrp or not orbitPart then
-            if isLoopkill then
+            if isLoopkill or isStacking then
                 return
             elseif not isManualTarget and not isGuardActive and not isStomping and not isBringing then
                 currentTarget = nil
@@ -2242,3 +2519,9 @@ task.defer(function()
 end)
 
 getgenv().StandoUnload = ejectScript
+
+if getDiscordWebhookUrl() and isDiscordReporterAlt() then
+    task.defer(function()
+        sendDiscordWebhook("Stando online: **" .. LocalPlayer.Name .. "** (Job `" .. game.JobId .. "`)")
+    end)
+end
