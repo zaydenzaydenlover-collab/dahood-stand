@@ -51,11 +51,52 @@ local WHITELISTED_USERS = {
     ["MattyBRapsFan20177"] = true,
 }
 
+local ARMY_USERS = {
+    ["idan1235838"] = true,
+    ["orionAur55"] = true,
+    ["filmon1335"] = true,
+    ["Nazrawi12121"] = true,
+    ["dudasgoodpuppy9ghlhk"] = true,
+    ["dudasgoodpuppy21ax97"] = true,
+    ["dudasgoodpuppyqz46fy"] = true,
+    ["TWparaoSub"] = true,
+    ["19z"] = true,
+    ["muhzmyson"] = true,
+    ["w_w20491"] = true,
+    ["MUHZMYSON"] = true,
+    ["b_tjv"] = true,
+    ["WockyFrm"] = true,
+    ["AHAAHHAHAHA2"] = true,
+    ["R0zxxx"] = true,
+    ["DIGASGAMES1"] = true,
+    ["lucythebest4life"] = true,
+    ["wveaklur"] = true,
+    ["dandysworldlegend9"] = true,
+    ["MattyBRapsFan20177"] = true,
+}
+
+local STANDO_PRESENCE_FOLDER = "StandoArmyPresence"
+local STANDO_PRESENCE_TTL = 10
+local standoPresenceValue = nil
+
 local function isWhitelisted(player)
     if not player then return false end
     local nameLower = string.lower(player.Name)
     local dispLower = string.lower(player.DisplayName)
     for k, _ in pairs(WHITELISTED_USERS) do
+        local kLower = string.lower(k)
+        if nameLower == kLower or dispLower == kLower then
+            return true
+        end
+    end
+    return false
+end
+
+local function isArmyMember(player)
+    if not player then return false end
+    local nameLower = string.lower(player.Name)
+    local dispLower = string.lower(player.DisplayName)
+    for k, _ in pairs(ARMY_USERS) do
         local kLower = string.lower(k)
         if nameLower == kLower or dispLower == kLower then
             return true
@@ -113,6 +154,22 @@ local function removeRuntimeWhitelist(player)
     end
     WHITELISTED_USERS[player.Name] = nil
     return true, "Removed WL: " .. player.Name
+end
+
+local function addRuntimeArmy(player)
+    if not player then return false, "Player not found!" end
+    ARMY_USERS[player.Name] = true
+    return true, "Army: " .. player.Name
+end
+
+local function removeRuntimeArmy(player)
+    if not player then return false, "Player not found!" end
+    local ownerLower = string.lower(OWNER_NAME)
+    if string.lower(player.Name) == ownerLower or string.lower(player.DisplayName) == ownerLower then
+        return false, "Army: cannot remove owner!"
+    end
+    ARMY_USERS[player.Name] = nil
+    return true, "Removed army: " .. player.Name
 end
 
 local function findPlayer(nameQuery)
@@ -934,7 +991,14 @@ local function ejectScript()
     removeGunHandlerHook()
     if fovCircle then pcall(function() fovCircle:Remove() end) end
     if screenGui then screenGui:Destroy() end
+    pcall(function()
+        if standoPresenceValue then
+            standoPresenceValue:Destroy()
+            standoPresenceValue = nil
+        end
+    end)
     getgenv().StandoUnload = nil
+    getgenv().StandoActive = nil
     fullStopAndReturn()
 end
 
@@ -1032,11 +1096,54 @@ task.spawn(function()
     end
 end)
 
+local function playerHasStandoLoaded(player)
+    if not player then return false end
+    if player == LocalPlayer then
+        return not isUnloaded
+    end
+    local folder = ReplicatedStorage:FindFirstChild(STANDO_PRESENCE_FOLDER)
+    if not folder then return false end
+    local marker = folder:FindFirstChild(tostring(player.UserId))
+    if not marker or not (marker:IsA("NumberValue") or marker:IsA("IntValue")) then
+        return false
+    end
+    return (tick() - marker.Value) <= STANDO_PRESENCE_TTL
+end
+
+local function anyStandoPresenceFromOthers()
+    local folder = ReplicatedStorage:FindFirstChild(STANDO_PRESENCE_FOLDER)
+    if not folder then return false end
+    for _, child in ipairs(folder:GetChildren()) do
+        if child:IsA("NumberValue") or child:IsA("IntValue") then
+            local uid = tonumber(child.Name)
+            if uid and uid ~= LocalPlayer.UserId and (tick() - child.Value) <= STANDO_PRESENCE_TTL then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function isFormationAlt(player)
+    local host = getLeader()
+    if not player or player == host then return false end
+    if player == LocalPlayer then
+        return not isUnloaded
+    end
+    if playerHasStandoLoaded(player) then
+        return isArmyMember(player)
+    end
+    if isArmyMember(player) and not anyStandoPresenceFromOthers() then
+        return true
+    end
+    return false
+end
+
 local function getFormationRoster()
     local host = getLeader()
     local alts = {}
     for _, p in ipairs(Players:GetPlayers()) do
-        if isWhitelisted(p) and p ~= host then
+        if isFormationAlt(p) then
             alts[#alts + 1] = p
         end
     end
@@ -1045,7 +1152,6 @@ local function getFormationRoster()
 end
 
 local function getAltIndex()
-    local host = getLeader()
     local _, alts = getFormationRoster()
     local n = #alts
     if n < 1 then return 1, 1 end
@@ -1054,17 +1160,34 @@ local function getAltIndex()
             return i, n
         end
     end
-    local idx = 1
-    for i = 1, n do
-        if alts[i].UserId < LocalPlayer.UserId then
-            idx = idx + 1
-        end
-    end
-    if isWhitelisted(LocalPlayer) and LocalPlayer ~= host then
-        return idx, n + 1
-    end
-    return idx, math.max(n, idx)
+    return 1, n
 end
+
+local function registerStandoPresence()
+    getgenv().StandoActive = true
+    pcall(function()
+        local folder = ReplicatedStorage:FindFirstChild(STANDO_PRESENCE_FOLDER)
+        if not folder then
+            folder = Instance.new("Folder")
+            folder.Name = STANDO_PRESENCE_FOLDER
+            folder.Parent = ReplicatedStorage
+        end
+        standoPresenceValue = folder:FindFirstChild(tostring(LocalPlayer.UserId))
+        if not standoPresenceValue then
+            standoPresenceValue = Instance.new("NumberValue")
+            standoPresenceValue.Name = tostring(LocalPlayer.UserId)
+            standoPresenceValue.Parent = folder
+        end
+        standoPresenceValue.Value = tick()
+    end)
+end
+
+task.spawn(function()
+    while not isUnloaded do
+        registerStandoPresence()
+        task.wait(2)
+    end
+end)
 
 local function getHostFlatBasis(leaderHrp)
     local center = leaderHrp.Position
@@ -1836,6 +1959,12 @@ local function executeCommand(speaker, msg, opts)
     elseif (cleanCmd == "unwl" or cleanCmd == "unwhitelist") and isOwner then
         local ok, msg = removeRuntimeWhitelist(findPlayer(param))
         status.Text = ok and msg or (msg or "WL: player not found!")
+    elseif (cleanCmd == "army" or cleanCmd == "alt") and isOwner then
+        local ok, msg = addRuntimeArmy(findPlayer(param))
+        status.Text = ok and msg or (msg or "Army: player not found!")
+    elseif (cleanCmd == "unarmy" or cleanCmd == "unalt") and isOwner then
+        local ok, msg = removeRuntimeArmy(findPlayer(param))
+        status.Text = ok and msg or (msg or "Army: player not found!")
     elseif cleanCmd == "dance" or cleanCmd == "syncdance" then
         isDanceEnabled = not isDanceEnabled
         if not isDanceEnabled then stopSyncDance() end
