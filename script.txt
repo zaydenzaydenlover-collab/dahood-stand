@@ -299,6 +299,7 @@ local isAntiStompActive = true
 local antiStompKoConn = nil
 local lastAntiStompTick = 0
 local lastStompETick = 0
+local combatHoldUntil = 0
 
 local hitboxScaleSize = 30
 local defaultHitboxSize = Vector3.new(2, 2, 1)
@@ -321,6 +322,18 @@ local VOID_HIDE_RX = 52000000
 local VOID_HIDE_RZ = 52000000
 local VOID_HIDE_RY_BASE = 72000000
 local VOID_HIDE_RY_AMP = 4500000
+local VOID_HIDE_WRITES = 20
+local VOID_HIDE_JITTER = 12000000
+local VOID_HIDE_SPIN = 38
+local VOID_KNIFE_PANIC_RANGE = 350
+local VOID_PANIC_PUSH = 38000000
+local VOID_HIDE_PART_SIZE = Vector3.new(0.05, 0.05, 0.05)
+local voidHideSavedParts = {}
+local VOID_HUNT_ORBIT_STUDS = 12000
+local VOID_HUNT_ORIGIN_STUDS = 8000000
+local VOID_HUNT_AIM_STUDS = 150000000
+local VOID_HUNT_WRITES = 24
+local VOID_HUNT_HITBOX = 40
 
 -- ==========================================
 -- SAFE RIGHT-CLICK HOLD FOR GUNS (ADS)
@@ -514,6 +527,53 @@ local function getOrbitPart(char)
     return char:FindFirstChild("HumanoidRootPart") or getAimPart(char)
 end
 
+local function getTargetWorldDistance(targetPlayer)
+    if not targetPlayer then return 0 end
+    local myChar = getChar(LocalPlayer)
+    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local tChar = getChar(targetPlayer) or targetPlayer.Character
+    local tHrp = tChar and tChar:FindFirstChild("HumanoidRootPart")
+    if not myHrp or not tHrp then return 0 end
+    return (tHrp.Position - myHrp.Position).Magnitude
+end
+
+local function isVoidHidingPlayer(player)
+    if not player then return false end
+    local c = getChar(player) or player.Character
+    local hrp = c and c:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    if hrp.Position.Magnitude >= VOID_HUNT_ORIGIN_STUDS then
+        return true
+    end
+    local leaderHrp = getLeaderHrp()
+    if leaderHrp and (hrp.Position - leaderHrp.Position).Magnitude >= VOID_HUNT_ORIGIN_STUDS then
+        return true
+    end
+    return false
+end
+
+local function shouldVoidHuntTarget(player)
+    if not player then return false end
+    if isVoidHidingPlayer(player) then return true end
+    return getTargetWorldDistance(player) > VOID_HUNT_ORBIT_STUDS
+end
+
+local function getSilentAimMaxDistance()
+    if currentTarget and shouldVoidHuntTarget(currentTarget) then
+        return VOID_HUNT_AIM_STUDS
+    end
+    return SilentAim.MaxDistance
+end
+
+local function snapVoidHuntCFrame(hrp, cf)
+    if not hrp or not cf then return end
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+    for _ = 1, VOID_HUNT_WRITES do
+        hrp.CFrame = cf
+    end
+end
+
 local function getBestSilentTarget()
     if not SilentAim.Enabled then return nil end
 
@@ -550,7 +610,7 @@ local function getBestSilentTarget()
 
             if hum and hum.Health > 0 and part then
                 local worldDist = (part.Position - localHrp.Position).Magnitude
-                if worldDist <= SilentAim.MaxDistance then
+                if worldDist <= getSilentAimMaxDistance() then
                     local be = char:FindFirstChild("BodyEffects")
                     local isKO = be and (
                         (be:FindFirstChild("K.O") and be["K.O"].Value == true) or
@@ -738,6 +798,7 @@ local function shouldParkInVoid()
 end
 
 local function beginVoidHideEngage(targetPlayer)
+    clearVoidHideProtection(getChar(LocalPlayer))
     currentWeapon = "Revolver"
     attackSubMode = "combat"
     equipTool("Revolver")
@@ -902,6 +963,9 @@ end
 
 local function fullStopAndReturn()
     setRightClick(false)
+    clearVoidHideProtection(getChar(LocalPlayer))
+    releaseGlueFollowLock()
+    holdCombat(3)
     isOrbiting = false
     isHiding = false
     isLoopkill = false
@@ -971,6 +1035,9 @@ local function stopAndHide()
 end
 
 local function startStand()
+    clearVoidHideProtection(getChar(LocalPlayer))
+    releaseGlueFollowLock()
+    holdCombat(2)
     isFollowing = true
     isOrbiting = false
     isHiding = false
@@ -1011,6 +1078,8 @@ local function toggleGKill()
     if not isGuardActive then
         currentTarget = nil
         isOrbiting = false
+        releaseGlueFollowLock()
+        holdCombat(2)
         if isHiding then
             isFollowing = false
             status.Text = "Status: DEEP VOID (.k / .lk / .gk)"
@@ -1216,18 +1285,97 @@ local function getAltIndex()
     return 1, n
 end
 
+local function getNearestThreatRangeStuds(myHrp)
+    if not myHrp then return math.huge end
+    local nearest = math.huge
+    local allP = Players:GetPlayers()
+    for i = 1, #allP do
+        local p = allP[i]
+        if p ~= LocalPlayer and not isWhitelisted(p) then
+            local c = getChar(p)
+            local hrp = c and c:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local d = (hrp.Position - myHrp.Position).Magnitude
+                if d < nearest then
+                    nearest = d
+                end
+            end
+        end
+    end
+    return nearest
+end
+
+local function clearVoidHideProtection(char)
+    if not char then
+        voidHideSavedParts = {}
+        return
+    end
+    for part, saved in pairs(voidHideSavedParts) do
+        if part and part.Parent and saved then
+            pcall(function()
+                part.Size = saved.size
+                part.CanCollide = saved.canCollide
+                part.Massless = saved.massless
+            end)
+        end
+    end
+    voidHideSavedParts = {}
+end
+
+local function applyVoidHideProtection(char)
+    if not char then return end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if not voidHideSavedParts[part] then
+                voidHideSavedParts[part] = {
+                    size = part.Size,
+                    canCollide = part.CanCollide,
+                    massless = part.Massless,
+                }
+            end
+            pcall(function()
+                part.Size = VOID_HIDE_PART_SIZE
+                part.CanCollide = false
+                part.Massless = true
+            end)
+        end
+    end
+end
+
 local function applyVoidHideCFrame(myHrp)
     if not myHrp then return end
     myHrp.Anchored = false
     myHrp.AssemblyLinearVelocity = Vector3.zero
     myHrp.AssemblyAngularVelocity = Vector3.zero
     local altIndex, totalAlts = getAltIndex()
-    local timeVal = tick() * 15
+    local timeVal = tick() * VOID_HIDE_SPIN
     local offsetAngle = ((altIndex - 1) / math.max(1, totalAlts)) * (2 * math.pi)
     local rx = math.sin(timeVal + offsetAngle) * VOID_HIDE_RX
     local rz = math.cos(timeVal * 0.9 + offsetAngle) * VOID_HIDE_RZ
     local ry = VOID_HIDE_RY_BASE + (math.sin(timeVal * 2 + altIndex) * VOID_HIDE_RY_AMP)
-    myHrp.CFrame = CFrame.new(rx, ry, rz)
+    rx = rx + math.random(-VOID_HIDE_JITTER, VOID_HIDE_JITTER)
+    rz = rz + math.random(-VOID_HIDE_JITTER, VOID_HIDE_JITTER)
+    ry = ry + math.random(-VOID_HIDE_JITTER, VOID_HIDE_JITTER)
+    local threatRange = getNearestThreatRangeStuds(myHrp)
+    if threatRange < VOID_KNIFE_PANIC_RANGE then
+        local push = VOID_PANIC_PUSH + (VOID_KNIFE_PANIC_RANGE - threatRange) * 150000
+        rx = rx + push * (0.6 + math.random())
+        rz = rz + push * (0.6 + math.random())
+        ry = ry + push * (0.35 + math.random() * 0.5)
+    end
+    local cf = CFrame.new(rx, ry, rz)
+    for _ = 1, VOID_HIDE_WRITES do
+        myHrp.CFrame = cf
+    end
+end
+
+local function runVoidHideParkTick()
+    if not shouldParkInVoid() then return end
+    local char = getChar(LocalPlayer)
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    applyVoidHideProtection(char)
+    applyVoidHideCFrame(hrp)
 end
 
 local function registerStandoPresence()
@@ -1598,6 +1746,25 @@ local function clearGluePhysics(root)
     glueSpot = nil
 end
 
+local function releaseGlueFollowLock()
+    glueSpot = nil
+    glueDesync = false
+    local hrp = getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart")
+    clearGluePhysics(hrp)
+end
+
+local function holdCombat(seconds)
+    combatHoldUntil = tick() + (seconds or 0)
+end
+
+local function isCombatHeld()
+    return tick() < combatHoldUntil
+end
+
+local function clearCombatHold()
+    combatHoldUntil = 0
+end
+
 local function toggleGlueFollow(forceState)
     if forceState ~= nil then
         isGlueFollowActive = forceState
@@ -1708,6 +1875,16 @@ end
 
 RunService.Heartbeat:Connect(function()
     pcall(runGlueHeartbeat)
+end)
+
+RunService.Heartbeat:Connect(function()
+    pcall(runVoidHideParkTick)
+end)
+
+pcall(function()
+    RunService.PreSimulation:Connect(function()
+        pcall(runVoidHideParkTick)
+    end)
 end)
 
 pcall(function()
@@ -2041,6 +2218,7 @@ local function executeCommand(speaker, msg, opts)
         stopSyncDance()
         status.Text = "Sync Dance: OFF"
     elseif cleanCmd == "gkill" or cleanCmd == "gk" then
+        clearCombatHold()
         toggleGKill()
     elseif cleanCmd == "silent" or cleanCmd == "silentaim" then
         SilentAim.Enabled = not SilentAim.Enabled
@@ -2060,6 +2238,7 @@ local function executeCommand(speaker, msg, opts)
     elseif cleanCmd == "loopkill" or cleanCmd == "lk" then
         local t = findPlayer(param)
         if t and not isWhitelisted(t) then
+            clearCombatHold()
             isStacking = false
             stackTargetName = nil
             loopkillTargetName = t.Name
@@ -2169,6 +2348,7 @@ local function executeCommand(speaker, msg, opts)
     elseif cleanCmd == "knock" or cleanCmd == "k" then
         local t = findPlayer(param)
         if t and not isWhitelisted(t) then
+            clearCombatHold()
             isLoopkill = false
             loopkillTargetName = nil
             isStomping = false
@@ -2182,7 +2362,7 @@ local function executeCommand(speaker, msg, opts)
             isOrbiting = true
             isFollowing = false
             formationMode = "none"
-            if isHiding then
+            if isHiding or shouldVoidHuntTarget(t) then
                 beginVoidHideEngage(t)
             else
                 if not currentWeapon then
@@ -2191,9 +2371,11 @@ local function executeCommand(speaker, msg, opts)
                 end
                 equipTool(currentWeapon or "Revolver")
             end
-            status.Text = isHiding and ("Status: VOID ENGAGE → " .. t.Name) or ("Status: KNOCKING " .. t.Name)
+            status.Text = shouldVoidHuntTarget(t) and ("Status: VOID HUNT → " .. t.Name)
+                or (isHiding and ("Status: VOID ENGAGE → " .. t.Name) or ("Status: KNOCKING " .. t.Name))
         end
-    elseif cleanCmd == "stop" or cleanCmd == "unequip" then
+    elseif cleanCmd == "stop" or cleanCmd == "unequip" or cleanCmd == "fullstop" or cleanCmd == "cancel"
+        or cleanCmd == "abort" or cleanCmd == "end" or cleanCmd == "quit" then
         fullStopAndReturn()
     elseif cleanCmd == "knife" then
         attackSubMode = "knife"
@@ -2370,6 +2552,7 @@ RunService.RenderStepped:Connect(function()
     end
 
     if shouldParkInVoid() then
+        applyVoidHideProtection(char)
         applyVoidHideCFrame(myHrp)
         if not shouldRunMainLoopWhileHiding() then
             return
@@ -2481,9 +2664,10 @@ RunService.RenderStepped:Connect(function()
     local leader = getLeader()
     local leaderHrp = getLeaderHrp()
 
-    if isGuardActive and not isManualTarget and not isLoopkill and not isStacking and not isStomping and not isBringing then
+    if isGuardActive and not isCombatHeld() and not isManualTarget and not isLoopkill and not isStacking and not isStomping and not isBringing then
         if leaderHrp then
             local nearestEnemy = nil
+            local voidHider = nil
             local shortestDist = 50.0
             local players = Players:GetPlayers()
             for i = 1, #players do
@@ -2494,6 +2678,9 @@ RunService.RenderStepped:Connect(function()
                     local tHrp = pChar and pChar:FindFirstChild("HumanoidRootPart")
                     local tHum = pChar and pChar:FindFirstChildOfClass("Humanoid")
                     if tHrp and tHum and tHum.Health > 0 and not isCharacterKnocked(pChar) then
+                        if isVoidHidingPlayer(p) then
+                            voidHider = p
+                        end
                         local dist = (tHrp.Position - leaderHrp.Position).Magnitude
                         if dist < shortestDist then
                             shortestDist = dist
@@ -2501,6 +2688,9 @@ RunService.RenderStepped:Connect(function()
                         end
                     end
                 end
+            end
+            if voidHider then
+                nearestEnemy = voidHider
             end
             if nearestEnemy then
                 local newGuardTarget = currentTarget ~= nearestEnemy
@@ -2512,6 +2702,12 @@ RunService.RenderStepped:Connect(function()
                     beginVoidHideEngage(nearestEnemy)
                     status.Text = "Status: VOID GUARD → " .. nearestEnemy.Name
                     status.TextColor3 = Color3.fromRGB(255, 120, 80)
+                elseif newGuardTarget and shouldVoidHuntTarget(nearestEnemy) then
+                    currentWeapon = "Revolver"
+                    attackSubMode = "combat"
+                    equipTool("Revolver")
+                    status.Text = "Status: VOID HUNT (GK) → " .. nearestEnemy.Name
+                    status.TextColor3 = Color3.fromRGB(255, 80, 120)
                 end
             elseif isOrbiting and currentTarget and not isManualTarget then
                 returnToVoidHideAfterGuard()
@@ -2519,7 +2715,7 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    if isLoopkill and loopkillTargetName then
+    if isLoopkill and loopkillTargetName and not isCombatHeld() then
         currentTarget = findPlayer(loopkillTargetName)
     end
 
@@ -2535,7 +2731,7 @@ RunService.RenderStepped:Connect(function()
     -- Combat & Orbiting
     local isKnifeMode = (attackSubMode == "knife" or attackSubMode == "pitch" or attackSubMode == "sign" or attackSubMode == "whip")
 
-    if isOrbiting and currentTarget then
+    if isOrbiting and currentTarget and not isCombatHeld() then
         if not isStomping and not isBringing then
             isGlueFollowActive = true
         end
@@ -2587,8 +2783,12 @@ RunService.RenderStepped:Connect(function()
 
         if currentWeapon then
             equipTool(currentWeapon)
-        elseif isVoidHideEngaging() then
-            beginVoidHideEngage(currentTarget)
+        elseif shouldVoidHuntTarget(currentTarget) or isVoidHideEngaging() then
+            if currentWeapon ~= "Revolver" or attackSubMode ~= "combat" then
+                currentWeapon = "Revolver"
+                attackSubMode = "combat"
+            end
+            equipTool("Revolver")
         end
 
         local activeTool = char:FindFirstChildOfClass("Tool")
@@ -2626,10 +2826,14 @@ RunService.RenderStepped:Connect(function()
         end
 
         local altIndex, totalAlts = getAltIndex()
+        local goalCF = buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
+        local voidHunt = shouldVoidHuntTarget(currentTarget)
 
-        if not isGlueFollowActive or not glueSpot then
+        if voidHunt then
+            snapVoidHuntCFrame(myHrp, goalCF)
+        elseif not isGlueFollowActive or not glueSpot then
             myHrp.AssemblyLinearVelocity = Vector3.zero
-            myHrp.CFrame = buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
+            myHrp.CFrame = goalCF
         end
     else
         isKnifeMode = false
@@ -2650,7 +2854,12 @@ RunService.RenderStepped:Connect(function()
             local targetRoot = oChar and oChar:FindFirstChild("HumanoidRootPart")
             local targetHum = oChar and oChar:FindFirstChildOfClass("Humanoid")
             if targetRoot and targetHum then
-                if isKnifeMode and targetHum.Health > 0 and not isWhitelisted(otherPlayer) then
+                local voidHuntMark = currentTarget == otherPlayer and isOrbiting and shouldVoidHuntTarget(otherPlayer)
+                if voidHuntMark and targetHum.Health > 0 and not isWhitelisted(otherPlayer) then
+                    targetRoot.Size = Vector3.new(VOID_HUNT_HITBOX, VOID_HUNT_HITBOX, VOID_HUNT_HITBOX)
+                    targetRoot.Transparency = 0.65
+                    targetRoot.CanCollide = false
+                elseif isKnifeMode and targetHum.Health > 0 and not isWhitelisted(otherPlayer) then
                     targetRoot.Size = Vector3.new(hitboxScaleSize, hitboxScaleSize, hitboxScaleSize)
                     targetRoot.Transparency = 0.5
                     targetRoot.CanCollide = false
