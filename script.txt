@@ -58,6 +58,7 @@ local ARMY_USERS = {
     ["dudasgoodpuppy9ghlhk"] = true,
     ["dudasgoodpuppy21ax97"] = true,
     ["dudasgoodpuppyqz46fy"] = true,
+    ["PakistaniMobBoss"] = true,
     ["19z"] = true,
     ["muhzmyson"] = true,
     ["w_w20491"] = true,
@@ -71,7 +72,6 @@ local ARMY_USERS = {
     ["wveaklur"] = true,
     ["dandysworldlegend9"] = true,
     ["MattyBRapsFan20177"] = true,
-    ["PakistaniMobBoss"] = true,
 }
 
 local STANDO_PRESENCE_FOLDER = "StandoArmyPresence"
@@ -202,61 +202,13 @@ do
     repeat task.wait() until getChar(LocalPlayer) or tick() > deadline
 end
 
-local function setHoodPlayerResetFlag(player)
-    player = player or LocalPlayer
-    pcall(function()
-        local flag = player:FindFirstChild("reset")
-        if flag and flag:IsA("BoolValue") then
-            flag.Value = true
-        end
-    end)
-end
-
-local function prepareHoodRespawnState(char)
-    char = char or getChar(LocalPlayer)
-    if not char then return end
-    local be = char:FindFirstChild("BodyEffects")
-    if not be then return end
-    pcall(function()
-        local canRespawn = be:FindFirstChild("CAN_RESPAWN")
-        if canRespawn and canRespawn:IsA("BoolValue") then
-            canRespawn.Value = true
-        end
-        local grabbed = be:FindFirstChild("Grabbed")
-        if grabbed and grabbed:IsA("ObjectValue") then
-            grabbed.Value = nil
-        end
-    end)
-end
-
 local function fireHoodResetCharacter()
-    prepareHoodRespawnState(getChar(LocalPlayer))
-    setHoodPlayerResetFlag(LocalPlayer)
-
-    local function fireRemote(containerName, remoteName, ...)
-        local container = ReplicatedStorage:FindFirstChild(containerName)
-        if not container then return end
-        pcall(function()
-            if container:IsA("RemoteFunction") then
-                container:InvokeServer(remoteName, ...)
-            else
-                container:FireServer(remoteName, ...)
-            end
-        end)
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if mainEvent then
+        local ok = pcall(function() mainEvent:FireServer("ResetCharacter") end)
+        if ok then return true end
     end
-
-    fireRemote("MainEvent", "ResetCharacter")
-    fireRemote("MainEvent", "Respawn")
-    fireRemote("UnreliableMainEvent", "ResetCharacter")
-    fireRemote("UnreliableMainEvent", "Respawn")
-    fireRemote("MainFunction", "Respawn")
-    fireRemote("MainFunction", "ResetCharacter")
-
-    if typeof(replicatesignal) == "function" then
-        pcall(function() replicatesignal(LocalPlayer.Kill) end)
-    end
-
-    return true
+    return false
 end
 
 local function isCharacterKnocked(char)
@@ -342,14 +294,6 @@ local glueSpot = nil
 local glueReal = nil
 local glueVelocity = nil
 local glueSpin = nil
-
-local function clearGluePhysics(root)
-    if root and sethiddenproperty then
-        pcall(function() sethiddenproperty(root, "PhysicsRepRootPart", nil) end)
-    end
-    glueSpot = nil
-end
-
 local isAntiStompActive = true
 local antiStompKoConn = nil
 local lastAntiStompTick = 0
@@ -1047,14 +991,12 @@ end
 
 local function performForceReset()
     fullStopAndReturn()
-    fireHoodResetCharacter()
-    task.defer(function()
-        task.wait(0.08)
+    if not fireHoodResetCharacter() then
         local char = getChar(LocalPlayer)
         if char then
             pcall(function() char:BreakJoints() end)
         end
-    end)
+    end
     status.Text = "Status: RESET"
 end
 
@@ -1155,25 +1097,23 @@ local function ejectScript()
         antiStompKoConn:Disconnect()
         antiStompKoConn = nil
     end
-    pcall(fullStopAndReturn)
     isGlueFollowActive = false
-    pcall(function()
-        clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
-    end)
+    clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
     pcall(function() RunService:UnbindFromRenderStep(GLUE_RENDER_STEP) end)
-    pcall(setRightClick, false)
-    pcall(stopSyncDance)
-    pcall(removeGunHandlerHook)
+    setRightClick(false)
+    stopSyncDance()
+    removeGunHandlerHook()
     if fovCircle then pcall(function() fovCircle:Remove() end) end
+    if screenGui then screenGui:Destroy() end
     pcall(function()
         if standoPresenceValue then
             standoPresenceValue:Destroy()
             standoPresenceValue = nil
         end
     end)
-    if screenGui then pcall(function() screenGui:Destroy() end) end
     getgenv().StandoUnload = nil
     getgenv().StandoActive = nil
+    fullStopAndReturn()
 end
 
 local lastReloadTick = 0
@@ -1791,6 +1731,13 @@ local function isGlueMovementActive()
     return isFollowing or isOrbiting
 end
 
+local function clearGluePhysics(root)
+    if root and sethiddenproperty then
+        pcall(function() sethiddenproperty(root, "PhysicsRepRootPart", nil) end)
+    end
+    glueSpot = nil
+end
+
 local function releaseGlueFollowLock()
     glueSpot = nil
     glueDesync = false
@@ -1947,9 +1894,9 @@ UserInputService.InputBegan:Connect(function(input, typing)
 end)
 
 makeButton("Stand / Follow Me", 48, startStand)
-makeButton("Full Stop (.stop)", 74, function() fullStopAndReturn() end)
+makeButton("Full Stop (.stop)", 74, fullStopAndReturn)
 makeButton("Toggle GKill (.gk)", 100, toggleGKill)
-makeButton("Force Reset (.reset)", 126, function() performForceReset() end)
+makeButton("Force Reset (.reset)", 126, performForceReset)
 makeButton("Equip Revolver", 152, function() currentWeapon = "Revolver"; attackSubMode = "combat"; equipTool("Revolver"); status.Text = "Weapon: Revolver" end)
 makeButton("Equip Knife", 178, function() currentWeapon = "Knife"; attackSubMode = "knife"; equipTool("Knife"); status.Text = "Weapon: Knife" end)
 makeButton("Formation: Circle", 204, function() formationMode = "circle"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; status.Text = "Formation: Circle (surround host)" end)
@@ -1975,7 +1922,7 @@ makeButton("Low GFX", 360, function()
     status.Text = "Low GFX Applied"
 end)
 makeButton("Rejoin Server", 386, function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
-makeButton("Eject / Unload (.eject)", 412, function() ejectScript() end)
+makeButton("Eject / Unload (.eject)", 412, ejectScript)
 makeButton("Toggle Glue (.glue)", 438, function() toggleGlueFollow() end)
 makeButton("Anti Stomp (.as)", 464, function() toggleAntiStomp() end)
 makeButton("Toggle Menu View", 490, function() frame.Visible = not frame.Visible end)
@@ -2018,42 +1965,6 @@ local function getCommandTargetQuery(args, startAt)
     return table.concat(args, " ", startAt)
 end
 
-local function normalizeCmdToken(token)
-    if not token or token == "" then return "" end
-    return string.lower(token):gsub("^[%./!\\/#:]+", ""):gsub("[%,;:]+$", "")
-end
-
-local function isStopCmdToken(token)
-    local clean = normalizeCmdToken(token)
-    if clean == "" or clean == "stopdance" then return false end
-    if clean == "stop" or clean == "stopp" or clean == "stp" or clean == "halt"
-        or clean == "unequip" or clean == "fullstop" or clean == "cancel" or clean == "abort"
-        or clean == "uns" or clean == "unstomp" or clean == "unst" or clean == "end" then
-        return true
-    end
-    return clean:match("^stop+p?$") ~= nil
-end
-
-local function messageRequestsStop(message)
-    if not message or message == "" then return false end
-    local trimmed = string.lower(message):gsub("^[%./!\\/#%s]+", ""):gsub("%s+$", "")
-    if trimmed == "" or trimmed == "stopdance" then return false end
-    if isStopCmdToken(trimmed) then return true end
-    local first = trimmed:match("^(%S+)")
-    return first and isStopCmdToken(first)
-end
-
-local function resolveChatSender(textSource)
-    if textSource and textSource.UserId then
-        local byId = Players:GetPlayerByUserId(textSource.UserId)
-        if byId then return byId end
-    end
-    if textSource and textSource.Name and textSource.Name ~= "" then
-        return findPlayer(textSource.Name)
-    end
-    return nil
-end
-
 local function executeCommand(speaker, msg)
     if isUnloaded or not msg or not speaker then return end
 
@@ -2061,16 +1972,11 @@ local function executeCommand(speaker, msg)
     local isAuthorized = isOwner or (grantedUser and speaker == grantedUser)
     if not isAuthorized then return end
 
-    if messageRequestsStop(msg) then
-        fullStopAndReturn()
-        return
-    end
-
     local args = {}
     for word in string.gmatch(msg, "%S+") do table.insert(args, word) end
     local rawCmd = args[1] or ""
     local param = args[2]
-    local cleanCmd = normalizeCmdToken(rawCmd)
+    local cleanCmd = string.lower(rawCmd):gsub("^[%./!]+", "")
 
     if cleanCmd == "eject" or cleanCmd == "unload" then
         if isOwner then ejectScript() end
@@ -2100,7 +2006,7 @@ local function executeCommand(speaker, msg)
         isDanceEnabled = false
         stopSyncDance()
         status.Text = "Sync Dance: OFF"
-    elseif isStopCmdToken(cleanCmd) then
+    elseif cleanCmd == "stop" or cleanCmd == "unequip" or cleanCmd == "fullstop" then
         fullStopAndReturn()
     elseif cleanCmd == "gkill" or cleanCmd == "gk" then
         toggleGKill()
@@ -2108,16 +2014,13 @@ local function executeCommand(speaker, msg)
         SilentAim.Enabled = not SilentAim.Enabled
         if SilentAim.Enabled then applyGunHandlerHook() else removeGunHandlerHook() end
         status.Text = "Silent Aim: " .. tostring(SilentAim.Enabled)
-    elseif cleanCmd == "reset" or cleanCmd == "forcereset" or cleanCmd == "fr" or cleanCmd == "re" then
-        local targetQuery = getCommandTargetQuery(args, 2)
-        if targetQuery and targetQuery ~= "" then
-            local resetTarget = findPlayer(targetQuery)
+    elseif cleanCmd == "reset" or cleanCmd == "forcereset" or cleanCmd == "re" then
+        if param then
+            local resetTarget = findPlayer(param)
             if not resetTarget then
                 status.Text = "Reset: player not found!"
             elseif resetTarget == LocalPlayer then
                 performForceReset()
-            else
-                status.Text = "Reset: name must be THIS alt (" .. LocalPlayer.Name .. ")"
             end
         else
             performForceReset()
@@ -2782,44 +2685,25 @@ Players.PlayerAdded:Connect(function(p)
     p.Chatted:Connect(function(msg) handleChat(p, msg) end)
 end)
 
-local function hookTextChannel(channel)
-    if not channel or not channel:IsA("TextChannel") then return end
-    channel.MessageReceived:Connect(function(txt)
-        local text = txt and txt.Text
-        if not text or text == "" then return end
-        local sender = txt.TextSource and resolveChatSender(txt.TextSource)
-        if sender then handleChat(sender, text) end
-    end)
-end
-
 pcall(function()
     for _, channel in ipairs(TextChatService:GetTextChannels()) do
-        hookTextChannel(channel)
-    end
-    TextChatService.ChildAdded:Connect(function(child)
-        hookTextChannel(child)
-    end)
-end)
-
-task.spawn(function()
-    local channels = TextChatService:WaitForChild("TextChannels", 25)
-    if not channels then return end
-    local general = channels:WaitForChild("RBXGeneral", 25)
-    if general then hookTextChannel(general) end
-end)
-
-pcall(function()
-    local legacy = ReplicatedStorage:WaitForChild("DefaultChatSystemChatEvents", 10)
-    local onMsg = legacy and legacy:WaitForChild("OnMessageDoneFiltering", 10)
-    if onMsg then
-        onMsg.OnClientEvent:Connect(function(packet)
-            if type(packet) ~= "table" then return end
-            local uid = packet.FromSpeakerUserId or packet.SpeakerUserId or 0
-            local sender = uid > 0 and Players:GetPlayerByUserId(uid) or nil
-            local text = packet.Message or packet.msg
-            if sender and text and text ~= "" then handleChat(sender, text) end
+        channel.MessageReceived:Connect(function(txt)
+            if txt.TextSource then
+                local sender = Players:GetPlayerByUserId(txt.TextSource.UserId)
+                if sender then handleChat(sender, txt.Text) end
+            end
         end)
     end
+    TextChatService.ChildAdded:Connect(function(child)
+        if child:IsA("TextChannel") then
+            child.MessageReceived:Connect(function(txt)
+                if txt.TextSource then
+                    local sender = Players:GetPlayerByUserId(txt.TextSource.UserId)
+                    if sender then handleChat(sender, txt.Text) end
+                end
+            end)
+        end
+    end)
 end)
 
 task.defer(function()
