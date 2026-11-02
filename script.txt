@@ -2503,11 +2503,12 @@ RunService.RenderStepped:Connect(function()
                 end
             end
             if nearestEnemy then
+                local newGuardTarget = currentTarget ~= nearestEnemy
                 currentTarget = nearestEnemy
                 isOrbiting = true
                 isFollowing = false
                 formationMode = "none"
-                if isHiding then
+                if isHiding and newGuardTarget then
                     beginVoidHideEngage(nearestEnemy)
                     status.Text = "Status: VOID GUARD → " .. nearestEnemy.Name
                     status.TextColor3 = Color3.fromRGB(255, 120, 80)
@@ -2532,7 +2533,6 @@ RunService.RenderStepped:Connect(function()
     end
 
     -- Combat & Orbiting
-    local activeTool = char:FindFirstChildOfClass("Tool")
     local isKnifeMode = (attackSubMode == "knife" or attackSubMode == "pitch" or attackSubMode == "sign" or attackSubMode == "whip")
 
     if isOrbiting and currentTarget then
@@ -2587,8 +2587,11 @@ RunService.RenderStepped:Connect(function()
 
         if currentWeapon then
             equipTool(currentWeapon)
+        elseif isVoidHideEngaging() then
+            beginVoidHideEngage(currentTarget)
         end
 
+        local activeTool = char:FindFirstChildOfClass("Tool")
         local aimPart = getAimPart(targetChar) or targetChar:FindFirstChild("Head") or targetHrp
         if aimPart then
             Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPart.Position)
