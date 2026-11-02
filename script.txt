@@ -317,6 +317,10 @@ local COMBAT_ORBIT_RADIUS = 5.4
 local COMBAT_ORBIT_HEIGHT = 14
 local STACK_ORBIT_RADIUS = 2.85
 local GLUE_RENDER_STEP = "StandoGlueFollow"
+local VOID_HIDE_RX = 250000
+local VOID_HIDE_RZ = 250000
+local VOID_HIDE_RY_BASE = 320000
+local VOID_HIDE_RY_AMP = 12000
 
 -- ==========================================
 -- SAFE RIGHT-CLICK HOLD FOR GUNS (ADS)
@@ -703,6 +707,42 @@ local function isCombatTaskActive()
     return isStomping or isBringing or isLoopkill or isStacking or isOrbiting or isManualTarget
 end
 
+local function isVoidGuardEnabled()
+    return isHiding and isGuardActive and not isManualTarget and not isLoopkill and not isStacking and not isStomping and not isBringing
+end
+
+local function shouldRunMainLoopWhileHiding()
+    return isCombatTaskActive() or isVoidGuardEnabled()
+end
+
+local function returnToVoidHideAfterGuard()
+    currentTarget = nil
+    isOrbiting = false
+    if isHiding then
+        isFollowing = false
+        status.Text = "Status: VOID GUARD (idle in void)"
+        status.TextColor3 = Color3.fromRGB(255, 165, 0)
+    else
+        isFollowing = true
+        status.Text = "Status: AUTO-GUARD (GKILL) ACTIVE"
+        status.TextColor3 = Color3.fromRGB(100, 200, 255)
+    end
+end
+
+local function isVoidHideEngaging()
+    return isHiding and isOrbiting and currentTarget ~= nil and not isStomping and not isBringing
+end
+
+local function shouldParkInVoid()
+    return isHiding and not isVoidHideEngaging()
+end
+
+local function beginVoidHideEngage(targetPlayer)
+    currentWeapon = "Revolver"
+    attackSubMode = "combat"
+    equipTool("Revolver")
+end
+
 local function triggerForceReset()
     local now = tick()
     if now - lastAntiStompTick < 0.45 then return end
@@ -913,6 +953,8 @@ local function stopAndHide()
     isBringing = false
     bringTargetName = nil
     bringPhase = nil
+    isStacking = false
+    stackTargetName = nil
     isManualTarget = false
     isGuardActive = false
     formationMode = "none"
@@ -924,7 +966,7 @@ local function stopAndHide()
         hrp.AssemblyLinearVelocity = Vector3.zero
         hrp.AssemblyAngularVelocity = Vector3.zero
     end
-    status.Text = "Status: SKY ZIP HIDE (FAST MOVE)"
+    status.Text = "Status: DEEP VOID (.k / .lk to snipe)"
     status.TextColor3 = Color3.fromRGB(255, 165, 0)
 end
 
@@ -969,10 +1011,21 @@ local function toggleGKill()
     if not isGuardActive then
         currentTarget = nil
         isOrbiting = false
-        isFollowing = true
-        status.Text = "Status: AUTO-GUARD OFF"
+        if isHiding then
+            isFollowing = false
+            status.Text = "Status: DEEP VOID (.k / .lk / .gk)"
+            status.TextColor3 = Color3.fromRGB(255, 165, 0)
+        else
+            isFollowing = true
+            status.Text = "Status: AUTO-GUARD OFF"
+            status.TextColor3 = Color3.fromRGB(100, 200, 255)
+        end
+    elseif isHiding then
+        status.Text = "Status: VOID GUARD (GKILL)"
+        status.TextColor3 = Color3.fromRGB(255, 165, 0)
     else
         status.Text = "Status: AUTO-GUARD (GKILL) ACTIVE"
+        status.TextColor3 = Color3.fromRGB(100, 200, 255)
     end
 end
 
@@ -1161,6 +1214,20 @@ local function getAltIndex()
         end
     end
     return 1, n
+end
+
+local function applyVoidHideCFrame(myHrp)
+    if not myHrp then return end
+    myHrp.Anchored = false
+    myHrp.AssemblyLinearVelocity = Vector3.zero
+    myHrp.AssemblyAngularVelocity = Vector3.zero
+    local altIndex, totalAlts = getAltIndex()
+    local timeVal = tick() * 15
+    local offsetAngle = ((altIndex - 1) / math.max(1, totalAlts)) * (2 * math.pi)
+    local rx = math.sin(timeVal + offsetAngle) * VOID_HIDE_RX
+    local rz = math.cos(timeVal * 0.9 + offsetAngle) * VOID_HIDE_RZ
+    local ry = VOID_HIDE_RY_BASE + (math.sin(timeVal * 2 + altIndex) * VOID_HIDE_RY_AMP)
+    myHrp.CFrame = CFrame.new(rx, ry, rz)
 end
 
 local function registerStandoPresence()
@@ -1519,7 +1586,7 @@ local function getGlueStompGoalCFrame(torso, altIndex, totalAlts)
 end
 
 local function isGlueMovementActive()
-    if isUnloaded or not isGlueFollowActive or isHiding then return false end
+    if isUnloaded or not isGlueFollowActive or shouldParkInVoid() then return false end
     if isStomping or isBringing then return true end
     return isFollowing or isOrbiting
 end
@@ -2007,9 +2074,11 @@ local function executeCommand(speaker, msg, opts)
             currentTarget = t
             isOrbiting = true
             isFollowing = false
-            isHiding = false
             formationMode = "none"
-            status.Text = "Status: LOOPKILLING " .. t.Name
+            if isHiding then
+                beginVoidHideEngage(t)
+            end
+            status.Text = isHiding and ("Status: VOID LOOPKILL → " .. t.Name) or ("Status: LOOPKILLING " .. t.Name)
         end
     elseif cleanCmd == "stack" or cleanCmd == "stk" or cleanCmd == "unstack" then
         local targetQuery = getCommandTargetQuery(args, 2)
@@ -2112,9 +2181,17 @@ local function executeCommand(speaker, msg, opts)
             currentTarget = t
             isOrbiting = true
             isFollowing = false
-            isHiding = false
             formationMode = "none"
-            status.Text = "Status: KNOCKING " .. t.Name
+            if isHiding then
+                beginVoidHideEngage(t)
+            else
+                if not currentWeapon then
+                    currentWeapon = "Revolver"
+                    attackSubMode = "combat"
+                end
+                equipTool(currentWeapon or "Revolver")
+            end
+            status.Text = isHiding and ("Status: VOID ENGAGE → " .. t.Name) or ("Status: KNOCKING " .. t.Name)
         end
     elseif cleanCmd == "stop" or cleanCmd == "unequip" then
         fullStopAndReturn()
@@ -2286,26 +2363,17 @@ RunService.RenderStepped:Connect(function()
     local myHum = char:FindFirstChildOfClass("Humanoid")
     if not myHrp or not myHum then return end
 
-    if isHoldingGun() and not isHiding and myHum.Health > 0 then
+    if isHoldingGun() and myHum.Health > 0 and (not isHiding or isCombatTaskActive()) then
         setRightClick(true)
     else
         setRightClick(false)
     end
 
-    if isHiding then
-        myHrp.Anchored = false
-        myHrp.AssemblyLinearVelocity = Vector3.zero
-        myHrp.AssemblyAngularVelocity = Vector3.zero
-        local timeVal = tick() * 15
-        local altIndex, totalAlts = getAltIndex()
-        local offsetAngle = ((altIndex - 1) / math.max(1, totalAlts)) * (2 * math.pi)
-
-        local rx = math.sin(timeVal + offsetAngle) * 45000
-        local rz = math.cos(timeVal * 0.9 + offsetAngle) * 45000
-        local ry = 50000 + (math.sin(timeVal * 2 + altIndex) * 3000)
-
-        myHrp.CFrame = CFrame.new(rx, ry, rz)
-        return
+    if shouldParkInVoid() then
+        applyVoidHideCFrame(myHrp)
+        if not shouldRunMainLoopWhileHiding() then
+            return
+        end
     end
 
     -- Stomp Mode Check
@@ -2413,7 +2481,7 @@ RunService.RenderStepped:Connect(function()
     local leader = getLeader()
     local leaderHrp = getLeaderHrp()
 
-    if isGuardActive and not isManualTarget and not isLoopkill and not isStacking and not isStomping and not isBringing and not isHiding then
+    if isGuardActive and not isManualTarget and not isLoopkill and not isStacking and not isStomping and not isBringing then
         if leaderHrp then
             local nearestEnemy = nil
             local shortestDist = 50.0
@@ -2439,12 +2507,13 @@ RunService.RenderStepped:Connect(function()
                 isOrbiting = true
                 isFollowing = false
                 formationMode = "none"
-            else
-                if isOrbiting and currentTarget and not isManualTarget then
-                    currentTarget = nil
-                    isOrbiting = false
-                    isFollowing = true
+                if isHiding then
+                    beginVoidHideEngage(nearestEnemy)
+                    status.Text = "Status: VOID GUARD → " .. nearestEnemy.Name
+                    status.TextColor3 = Color3.fromRGB(255, 120, 80)
                 end
+            elseif isOrbiting and currentTarget and not isManualTarget then
+                returnToVoidHideAfterGuard()
             end
         end
     end
@@ -2472,9 +2541,13 @@ RunService.RenderStepped:Connect(function()
         end
         if isWhitelisted(currentTarget) then
             if not isLoopkill and not isManualTarget then
-                currentTarget = nil
-                isOrbiting = false
-                isFollowing = true
+                if isGuardActive then
+                    returnToVoidHideAfterGuard()
+                else
+                    currentTarget = nil
+                    isOrbiting = false
+                    isFollowing = true
+                end
             else
                 fullStopAndReturn()
             end
@@ -2487,10 +2560,7 @@ RunService.RenderStepped:Connect(function()
         local orbitPart = getOrbitPart(targetChar)
 
         if isGuardActive and not isManualTarget and targetChar and isCharacterKnocked(targetChar) then
-            currentTarget = nil
-            isOrbiting = false
-            isFollowing = true
-            status.Text = "Status: AUTO-GUARD (GKILL) ACTIVE"
+            returnToVoidHideAfterGuard()
             return
         end
 
@@ -2503,9 +2573,7 @@ RunService.RenderStepped:Connect(function()
                 isFollowing = true
                 return
             elseif isGuardActive then
-                currentTarget = nil
-                isOrbiting = false
-                isFollowing = true
+                returnToVoidHideAfterGuard()
                 return
             elseif not isStomping and not isBringing then
                 fullStopAndReturn()
@@ -2591,7 +2659,7 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    if not isFollowing or isHiding or isOrbiting then return end
+    if not isFollowing or shouldParkInVoid() or isOrbiting then return end
     if isGlueFollowActive and glueSpot then return end
 
     -- Follow Formations (alts ring around host; host account does not take a slot)
