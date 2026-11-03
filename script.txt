@@ -36,7 +36,10 @@ local lastManualResetTick = 0
 local resetGraceUntil = 0
 local MANUAL_RESET_COOLDOWN = 2.5
 local RESET_GRACE_SEC = 1.25
-local ANTISTOMP_REARM_SEC = 0.75
+local ANTISTOMP_REARM_SEC = 0.35
+local KNOCK_RESET_DEBOUNCE = 0.03
+local KNOCK_RESET_GRACE = 0.3
+local ANTI_STOMP_HP_RESET_AT = 8
 local finishResetSpawn, rearmAntiStompAfterGrace, armAntiStomp, equipTool, startStand
 
 local WHITELISTED_USERS = {
@@ -526,6 +529,7 @@ end
 local isAntiStompActive = true
 local antiStompKoConn = nil
 local antiStompDiedConn = nil
+local antiStompHealthConn = nil
 local lastAntiStompTick = 0
 local lastStompETick = 0
 
@@ -615,6 +619,10 @@ local function disconnectAntiStompListeners()
     if antiStompDiedConn then
         antiStompDiedConn:Disconnect()
         antiStompDiedConn = nil
+    end
+    if antiStompHealthConn then
+        antiStompHealthConn:Disconnect()
+        antiStompHealthConn = nil
     end
 end
 
@@ -1180,7 +1188,7 @@ local status = Instance.new("TextLabel")
 status.Size = UDim2.new(1, 0, 0, 20)
 status.Position = UDim2.new(0, 0, 0, 22)
 status.BackgroundTransparency = 1
-status.Text = "Status: FOLLOWING | Anti stomp ON"
+status.Text = "Status: FOLLOWING | Anti stomp ON (HP<=8)"
 status.TextColor3 = Color3.fromRGB(100, 200, 255)
 status.TextSize = 11
 status.Font = Enum.Font.SourceSans
@@ -1190,6 +1198,90 @@ local function shouldSkipAntiStomp()
     if isUnloaded or resetInProgress or not isAntiStompActive then return true end
     if tick() < resetGraceUntil then return true end
     return false
+end
+
+local function shouldSkipAntiStompKnock()
+    return isUnloaded or not isAntiStompActive
+end
+
+local function pulseHoodResetNow()
+    pcall(function()
+        StarterGui:SetCore("ResetButtonCallback", true)
+    end)
+    if typeof(replicatesignal) == "function" then
+        pcall(function() replicatesignal(LocalPlayer.Kill) end)
+    end
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if mainEvent then
+        pcall(function() mainEvent:FireServer("ResetCharacter") end)
+        pcall(function() mainEvent:FireServer("Respawn") end)
+    end
+    if hoodResetAttempt then
+        pcall(hoodResetAttempt, false, false)
+    end
+end
+
+local function performInstantKnockReset()
+    if shouldSkipAntiStompKnock() then return end
+    local now = tick()
+    if now - lastAntiStompTick < KNOCK_RESET_DEBOUNCE then return end
+    lastAntiStompTick = now
+    resetGraceUntil = now + KNOCK_RESET_GRACE
+
+    glueSpot = nil
+    glueDesync = false
+    isOrbiting = false
+    isHiding = false
+    disconnectAntiStompListeners()
+    isAntiStompActive = false
+
+    pcall(function()
+        clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
+    end)
+    pcall(function() clearVoidHideProtection(getChar(LocalPlayer)) end)
+
+    pulseHoodResetNow()
+
+    if resetInProgress then
+        return
+    end
+
+    resetInProgress = true
+    local priorChar = LocalPlayer.Character
+    local conn
+    conn = LocalPlayer.CharacterAdded:Connect(function(newChar)
+        if conn then
+            conn:Disconnect()
+            conn = nil
+        end
+        task.defer(function()
+            pcall(function() newChar:WaitForChild("Humanoid", 8) end)
+            if finishResetSpawn then
+                finishResetSpawn(newChar)
+            end
+        end)
+    end)
+
+    task.delay(1.25, function()
+        if conn then
+            conn:Disconnect()
+            conn = nil
+        end
+        if isUnloaded then return end
+        if resetInProgress then
+            if LocalPlayer.Character and LocalPlayer.Character ~= priorChar then
+                if finishResetSpawn then
+                    finishResetSpawn(LocalPlayer.Character)
+                end
+            else
+                resetInProgress = false
+                isAntiStompActive = true
+                if rearmAntiStompAfterGrace then
+                    rearmAntiStompAfterGrace(LocalPlayer.Character)
+                end
+            end
+        end
+    end)
 end
 
 local function isCombatTaskActive()
@@ -1243,21 +1335,32 @@ local function beginVoidHideEngage(_targetPlayer)
 end
 
 local function triggerForceReset()
-    local now = tick()
-    if now - lastAntiStompTick < 0.2 then return end
-    lastAntiStompTick = now
-    resetGraceUntil = now + RESET_GRACE_SEC
-    hoodPerformResetBurst(true, true)
+    performInstantKnockReset()
 end
 
 local function triggerAntiStompKill()
     if shouldSkipAntiStomp() then return end
-    triggerForceReset()
+    performInstantKnockReset()
+end
+
+local function shouldAntiStompResetForHp(hp)
+    if type(hp) ~= "number" then return false end
+    return hp > 0 and hp <= ANTI_STOMP_HP_RESET_AT
+end
+
+local function tryAntiStompLowHpReset(character)
+    if not character or shouldSkipAntiStomp() then return end
+    if isCharacterKnocked(character) then return end
+    local hum = character:FindFirstChildOfClass("Humanoid")
+    if not hum then return end
+    local hp = hum.Health
+    if not shouldAntiStompResetForHp(hp) then return end
+    performInstantKnockReset()
 end
 
 local function triggerCombatDeathReset()
     if isUnloaded or not isCombatTaskActive() then return end
-    triggerForceReset()
+    performInstantKnockReset()
 end
 
 armAntiStomp = function(character)
@@ -1282,9 +1385,18 @@ armAntiStomp = function(character)
             antiStompDiedConn = nil
         end
         antiStompDiedConn = hum.Died:Connect(function()
-            if resetInProgress or tick() < resetGraceUntil then return end
-            triggerCombatDeathReset()
+            if shouldSkipAntiStompKnock() then return end
+            performInstantKnockReset()
         end)
+
+        if antiStompHealthConn then
+            antiStompHealthConn:Disconnect()
+            antiStompHealthConn = nil
+        end
+        antiStompHealthConn = hum.HealthChanged:Connect(function(hp)
+            tryAntiStompLowHpReset(character)
+        end)
+        tryAntiStompLowHpReset(character)
     end
 
     if antiStompKoConn then
@@ -1293,25 +1405,17 @@ armAntiStomp = function(character)
     end
 
     antiStompKoConn = ko.Changed:Connect(function()
-        if shouldSkipAntiStomp() then return end
+        if shouldSkipAntiStompKnock() then return end
         local dead = effects:FindFirstChild("Dead")
         if not (ko.Parent and ko.Value == true) then return end
         if dead and dead.Value == true then return end
-        if isCombatTaskActive() then
-            triggerForceReset()
-        else
-            triggerAntiStompKill()
-        end
+        performInstantKnockReset()
     end)
 
     if ko.Value == true then
         local dead = effects:FindFirstChild("Dead")
-        if not (dead and dead.Value == true) then
-            if isCombatTaskActive() then
-                triggerForceReset()
-            elseif not shouldSkipAntiStomp() then
-                triggerAntiStompKill()
-            end
+        if not (dead and dead.Value == true) and not shouldSkipAntiStompKnock() then
+            performInstantKnockReset()
         end
     end
 end
@@ -1327,12 +1431,20 @@ local function setAntiStomp(active)
             antiStompDiedConn:Disconnect()
             antiStompDiedConn = nil
         end
+        if antiStompHealthConn then
+            antiStompHealthConn:Disconnect()
+            antiStompHealthConn = nil
+        end
     end
     if active then
         local c = getChar(LocalPlayer)
-        if c then task.spawn(armAntiStomp, c) end
+        if c and armAntiStomp then
+            task.spawn(function()
+                armAntiStomp(c)
+            end)
+        end
     end
-    status.Text = "Anti stomp: " .. (active and "ON" or "OFF")
+    status.Text = "Anti stomp: " .. (active and "ON" or "OFF") .. " (reset HP<=" .. ANTI_STOMP_HP_RESET_AT .. ")"
 end
 
 local function toggleAntiStomp(forceState)
@@ -1588,6 +1700,10 @@ local function ejectScript()
     if antiStompDiedConn then
         antiStompDiedConn:Disconnect()
         antiStompDiedConn = nil
+    end
+    if antiStompHealthConn then
+        antiStompHealthConn:Disconnect()
+        antiStompHealthConn = nil
     end
     pcall(fullStopAndReturn)
     isGlueFollowActive = false
@@ -3332,7 +3448,11 @@ task.defer(function()
     if isUnloaded then return end
     isAntiStompActive = true
     local c = getChar(LocalPlayer)
-    if c then task.spawn(armAntiStomp, c) end
+    if c and armAntiStomp then
+        task.spawn(function()
+            armAntiStomp(c)
+        end)
+    end
 end)
 
 getgenv().StandoUnload = ejectScript
@@ -3340,5 +3460,5 @@ getgenv().StandoReset = performForceReset
 getgenv().StandoAntiStomp = true
 getgenv().StandoLoaded = true
 pcall(function()
-    warn("[Stando] loaded on " .. LocalPlayer.Name .. " | Anti-stomp ON")
+    warn("[Stando] loaded on " .. LocalPlayer.Name .. " | Anti-stomp ON (reset when HP <= " .. ANTI_STOMP_HP_RESET_AT .. ")")
 end)
