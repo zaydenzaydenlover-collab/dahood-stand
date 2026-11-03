@@ -35,7 +35,9 @@ local resetSpawnConn = nil
 local lastManualResetTick = 0
 local resetGraceUntil = 0
 local MANUAL_RESET_COOLDOWN = 2.5
-local RESET_GRACE_SEC = 4
+local RESET_GRACE_SEC = 1.25
+local ANTISTOMP_REARM_SEC = 0.75
+local finishResetSpawn, rearmAntiStompAfterGrace, armAntiStomp, equipTool, startStand
 
 local WHITELISTED_USERS = {
     ["idan1235838"] = true,
@@ -616,18 +618,20 @@ local function disconnectAntiStompListeners()
     end
 end
 
-local function rearmAntiStompAfterGrace(char)
-    task.delay(RESET_GRACE_SEC, function()
+rearmAntiStompAfterGrace = function(char)
+    task.delay(ANTISTOMP_REARM_SEC, function()
         if isUnloaded then return end
         isAntiStompActive = true
         local c = getChar(LocalPlayer) or char
-        if c then
-            task.spawn(armAntiStomp, c)
+        if c and armAntiStomp then
+            task.spawn(function()
+                armAntiStomp(c)
+            end)
         end
     end)
 end
 
-local function finishResetSpawn(char)
+finishResetSpawn = function(char)
     if isUnloaded then return end
     resetInProgress = false
     pcall(function() clearVoidHideProtection(char or getChar(LocalPlayer)) end)
@@ -699,7 +703,7 @@ local function hoodPerformResetBurst(quickMode, singleShot)
             end)
         end)
 
-        task.wait(singleShot and 8 or 10)
+        task.wait(singleShot and 4 or 6)
         if conn then
             conn:Disconnect()
             conn = nil
@@ -1223,7 +1227,7 @@ local function shouldParkInVoid()
     return isHiding and not isVoidHideEngaging()
 end
 
-local function beginVoidHideEngage(targetPlayer)
+local function beginVoidHideEngage(_targetPlayer)
     clearVoidHideProtection(getChar(LocalPlayer))
     glueSpot = nil
     glueDesync = false
@@ -1232,12 +1236,15 @@ local function beginVoidHideEngage(targetPlayer)
     if c then applyVoidHideProtection(c) end
     currentWeapon = "Revolver"
     attackSubMode = "combat"
-    equipTool("Revolver")
+    isGlueFollowActive = true
+    if equipTool then
+        pcall(equipTool, "Revolver")
+    end
 end
 
 local function triggerForceReset()
     local now = tick()
-    if now - lastAntiStompTick < 0.45 then return end
+    if now - lastAntiStompTick < 0.2 then return end
     lastAntiStompTick = now
     resetGraceUntil = now + RESET_GRACE_SEC
     hoodPerformResetBurst(true, true)
@@ -1253,7 +1260,7 @@ local function triggerCombatDeathReset()
     triggerForceReset()
 end
 
-local function armAntiStomp(character)
+armAntiStomp = function(character)
     if not character or isUnloaded or not isAntiStompActive then return end
     local effects = character:FindFirstChild("BodyEffects")
     if not effects then
@@ -1295,7 +1302,6 @@ local function armAntiStomp(character)
         else
             triggerAntiStompKill()
         end
-        task.wait(0.5)
     end)
 
     if ko.Value == true then
@@ -1367,7 +1373,7 @@ local function unequipAll()
     end
 end
 
-local function equipTool(toolName)
+equipTool = function(toolName)
     if not toolName or toolName == "" then return end
     local char = getChar(LocalPlayer)
     if not char then return end
@@ -1506,7 +1512,7 @@ local function stopAndHide()
     status.TextColor3 = Color3.fromRGB(255, 165, 0)
 end
 
-local function startStand()
+startStand = function()
     clearVoidHideProtection(getChar(LocalPlayer))
     isFollowing = true
     isGlueFollowActive = true
@@ -3043,14 +3049,22 @@ RunService.RenderStepped:Connect(function()
                 isOrbiting = true
                 isFollowing = false
                 formationMode = "none"
+                isGlueFollowActive = true
+                if newGuardTarget and not currentWeapon then
+                    currentWeapon = "Revolver"
+                    attackSubMode = "combat"
+                end
                 if isHiding and newGuardTarget then
-                    beginVoidHideEngage(nearestEnemy)
-                    status.Text = "Status: VOID GUARD ? " .. nearestEnemy.Name
+                    pcall(beginVoidHideEngage, nearestEnemy)
+                    status.Text = "Status: VOID GUARD -> " .. nearestEnemy.Name
                     status.TextColor3 = Color3.fromRGB(255, 120, 80)
                 elseif newGuardTarget and shouldVoidHuntTarget(nearestEnemy) then
-                    beginVoidHideEngage(nearestEnemy)
-                    status.Text = "Status: VOID HUNT (GK) ? " .. nearestEnemy.Name
+                    pcall(beginVoidHideEngage, nearestEnemy)
+                    status.Text = "Status: VOID HUNT (GK) -> " .. nearestEnemy.Name
                     status.TextColor3 = Color3.fromRGB(255, 80, 120)
+                elseif newGuardTarget then
+                    status.Text = "Status: GK -> " .. nearestEnemy.Name
+                    status.TextColor3 = Color3.fromRGB(100, 200, 255)
                 end
             elseif isOrbiting and currentTarget and not isManualTarget then
                 returnToVoidHideAfterGuard()
