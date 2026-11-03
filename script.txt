@@ -960,22 +960,22 @@ local function getAimPart(char)
         or char:FindFirstChild("Head")
 end
 
-local function getHeadOrbitPart(char)
+local function getOrbitAnchorPart(char)
     if not char then return nil end
-    return char:FindFirstChild("Head")
+    return char:FindFirstChild("HumanoidRootPart")
         or char:FindFirstChild("UpperTorso")
         or char:FindFirstChild("Torso")
-        or char:FindFirstChild("HumanoidRootPart")
+        or char:FindFirstChild("Head")
         or char.PrimaryPart
 end
 
 local function getOrbitPart(char)
     if not char then return nil end
-    return getHeadOrbitPart(char) or getAimPart(char)
+    return getOrbitAnchorPart(char) or getAimPart(char)
 end
 
 local function getVoidHuntAimPart(char)
-    return getHeadOrbitPart(char)
+    return getOrbitAnchorPart(char)
 end
 
 local function getTargetWorldDistance(targetPlayer)
