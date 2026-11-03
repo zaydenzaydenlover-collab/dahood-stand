@@ -206,11 +206,40 @@ local function getChar(player)
     folder = folder and folder:FindFirstChild("Characters")
     if folder then
         local hood = folder:FindFirstChild(player.Name)
-        if hood and hood:FindFirstChild("HumanoidRootPart") then
+        if hood and hood:IsA("Model") then
             return hood
         end
     end
     return player.Character
+end
+
+local function getCharRootPart(char)
+    if not char then return nil end
+    return char:FindFirstChild("HumanoidRootPart")
+        or char:FindFirstChild("UpperTorso")
+        or char:FindFirstChild("Torso")
+        or char:FindFirstChild("Head")
+        or char.PrimaryPart
+end
+
+local function getPlayerRootPart(player)
+    local c = getChar(player) or player.Character
+    return c and getCharRootPart(c), c
+end
+
+local function getPartWorldPosition(partOrChar)
+    if not partOrChar then return nil end
+    if partOrChar:IsA("BasePart") then
+        return partOrChar.Position
+    end
+    local root = getCharRootPart(partOrChar)
+    if root then return root.Position end
+    for _, d in ipairs(partOrChar:GetDescendants()) do
+        if d:IsA("BasePart") then
+            return d.Position
+        end
+    end
+    return nil
 end
 
 do
@@ -492,8 +521,8 @@ end)
 -- ==========================================
 
 local currentTarget = nil
-local currentWeapon = nil
-local attackSubMode = "combat"
+local currentWeapon = "Knife"
+local attackSubMode = "knife"
 local standPositionMode = "default"
 local formationMode = "none"
 
@@ -564,10 +593,11 @@ local C = {
     VOID_PANIC_PUSH = 3800000000,
     VOID_HIDE_PART_SIZE = Vector3.new(0.05, 0.05, 0.05),
     VOID_HUNT_ORBIT_STUDS = 6000,
-    VOID_HUNT_ORIGIN_STUDS = 250000000,
-    VOID_HUNT_FAR_STUDS = 50000000,
+    VOID_HUNT_ORIGIN_STUDS = 500000,
+    VOID_HUNT_FAR_STUDS = 250000,
+    VOID_HUNT_SEPARATION_STUDS = 500000,
     VOID_HUNT_AIM_STUDS = 50000000000,
-    VOID_HUNT_WRITES = 56,
+    VOID_HUNT_WRITES = 128,
     VOID_HUNT_HITBOX = 55,
     VOID_HUNT_CLOSE_RADIUS = 2.1,
     VOID_HUNT_FIRE_COOLDOWN = 0.07,
@@ -930,51 +960,63 @@ local function getAimPart(char)
         or char:FindFirstChild("Head")
 end
 
+local function getHeadOrbitPart(char)
+    if not char then return nil end
+    return char:FindFirstChild("Head")
+        or char:FindFirstChild("UpperTorso")
+        or char:FindFirstChild("Torso")
+        or char:FindFirstChild("HumanoidRootPart")
+        or char.PrimaryPart
+end
+
 local function getOrbitPart(char)
     if not char then return nil end
-    return char:FindFirstChild("HumanoidRootPart") or getAimPart(char)
+    return getHeadOrbitPart(char) or getAimPart(char)
+end
+
+local function getVoidHuntAimPart(char)
+    return getHeadOrbitPart(char)
 end
 
 local function getTargetWorldDistance(targetPlayer)
     if not targetPlayer then return 0 end
-    local myChar = getChar(LocalPlayer)
-    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    local tChar = getChar(targetPlayer) or targetPlayer.Character
-    local tHrp = tChar and tChar:FindFirstChild("HumanoidRootPart")
-    if not myHrp or not tHrp then return 0 end
-    return (tHrp.Position - myHrp.Position).Magnitude
+    local myPos = getPartWorldPosition(getChar(LocalPlayer))
+    local _, tChar = getPlayerRootPart(targetPlayer)
+    local tPos = getPartWorldPosition(tChar)
+    if not myPos or not tPos then return 0 end
+    return (tPos - myPos).Magnitude
 end
 
 local function isExtremeWorldPosition(pos)
     if not pos then return false end
+    local ax = math.abs(pos.X)
+    local ay = math.abs(pos.Y)
+    local az = math.abs(pos.Z)
+    local maxAxis = math.max(ax, ay, az)
+    if maxAxis >= C.VOID_HUNT_ORIGIN_STUDS then return true end
     if pos.Magnitude >= C.VOID_HUNT_ORIGIN_STUDS then return true end
-    if math.abs(pos.X) >= C.VOID_HUNT_ORIGIN_STUDS
-        or math.abs(pos.Y) >= C.VOID_HUNT_ORIGIN_STUDS
-        or math.abs(pos.Z) >= C.VOID_HUNT_ORIGIN_STUDS then
-        return true
-    end
-    if math.abs(pos.Y) >= C.VOID_HUNT_FAR_STUDS then return true end
+    if ay >= C.VOID_HUNT_FAR_STUDS then return true end
     return false
 end
 
 local function isVoidHidingPlayer(player)
     if not player then return false end
-    local c = getChar(player) or player.Character
-    local hrp = c and c:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
-    if isExtremeWorldPosition(hrp.Position) then return true end
+    local _, c = getPlayerRootPart(player)
+    if not c then return false end
+    local pos = getPartWorldPosition(c)
+    if not pos then return false end
+    if isExtremeWorldPosition(pos) then return true end
     local leaderHrp = getLeaderHrp()
-    if leaderHrp and isExtremeWorldPosition(hrp.Position - leaderHrp.Position) then
+    if leaderHrp and isExtremeWorldPosition(pos - leaderHrp.Position) then
         return true
     end
-    local myChar = getChar(LocalPlayer)
-    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    if myHrp then
-        local sep = (hrp.Position - myHrp.Position).Magnitude
-        if sep >= C.VOID_HUNT_ORBIT_STUDS and isExtremeWorldPosition(hrp.Position) then
+    local myPos = getPartWorldPosition(getChar(LocalPlayer))
+    if myPos then
+        local sep = (pos - myPos).Magnitude
+        if sep >= C.VOID_HUNT_SEPARATION_STUDS then return true end
+        if sep >= C.VOID_HUNT_ORBIT_STUDS and isExtremeWorldPosition(pos) then
             return true
         end
-        if sep >= C.VOID_HUNT_ORIGIN_STUDS then return true end
     end
     return false
 end
@@ -983,19 +1025,31 @@ local function shouldVoidHuntTarget(player)
     if not player then return false end
     if isVoidHidingPlayer(player) then return true end
     if getTargetWorldDistance(player) > C.VOID_HUNT_ORBIT_STUDS then return true end
-    local c = getChar(player) or player.Character
-    local hrp = c and c:FindFirstChild("HumanoidRootPart")
-    if hrp and isExtremeWorldPosition(hrp.Position) then return true end
+    local pos = getPartWorldPosition(getChar(player) or player.Character)
+    if pos and isExtremeWorldPosition(pos) then return true end
     return false
+end
+
+local function isManualChaseTarget(player)
+    if not player or not isManualTarget or currentTarget ~= player then return false end
+    if isLoopkill or isStomping then return true end
+    if isOrbiting and not isBringing and not isGuardActive then return true end
+    return false
+end
+
+local function shouldUseInfiniteChase(player)
+    if not player then return false end
+    if isManualChaseTarget(player) then return true end
+    return shouldVoidHuntTarget(player)
 end
 
 local function isVoidHuntActive()
     if resetInProgress then return false end
-    return isOrbiting and currentTarget ~= nil and shouldVoidHuntTarget(currentTarget)
+    return isOrbiting and currentTarget ~= nil and shouldUseInfiniteChase(currentTarget)
 end
 
 local function getSilentAimMaxDistance()
-    if currentTarget and shouldVoidHuntTarget(currentTarget) then
+    if currentTarget and shouldUseInfiniteChase(currentTarget) then
         return C.VOID_HUNT_AIM_STUDS
     end
     return SilentAim.MaxDistance
@@ -1016,7 +1070,9 @@ local function getBestSilentTarget()
     if currentTarget and not isWhitelisted(currentTarget) then
         local char = getChar(currentTarget) or currentTarget.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
-        local part = char and getAimPart(char)
+        local part = char and (
+            shouldUseInfiniteChase(currentTarget) and getVoidHuntAimPart(char) or getAimPart(char)
+        )
 
         if hum and hum.Health > 0 and part then
             local be = char:FindFirstChild("BodyEffects")
@@ -1326,12 +1382,23 @@ local function beginVoidHideEngage(_targetPlayer)
     clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
     local c = getChar(LocalPlayer)
     if c then applyVoidHideProtection(c) end
-    currentWeapon = "Revolver"
-    attackSubMode = "combat"
+    currentWeapon = "Knife"
+    attackSubMode = "knife"
     isGlueFollowActive = true
     if equipTool then
-        pcall(equipTool, "Revolver")
+        pcall(equipTool, "Knife")
     end
+end
+
+local function beginCombatChase(targetPlayer)
+    if not targetPlayer then return end
+    if releaseGlueFollowLock then
+        releaseGlueFollowLock()
+    end
+    isGlueFollowActive = true
+    isHiding = false
+    formationMode = "none"
+    pcall(beginVoidHideEngage, targetPlayer)
 end
 
 local function triggerForceReset()
@@ -2238,9 +2305,7 @@ end
 
 local function buildVoidHuntCFrame(theirChar, altIndex, totalAlts)
     if not theirChar then return nil end
-    local aimPart = getAimPart(theirChar)
-        or theirChar:FindFirstChild("HumanoidRootPart")
-        or theirChar:FindFirstChild("Head")
+    local aimPart = getVoidHuntAimPart(theirChar)
     if not aimPart then return nil end
     totalAlts = math.max(1, totalAlts or 1)
     altIndex = math.clamp(altIndex or 1, 1, totalAlts)
@@ -2718,17 +2783,8 @@ local function executeCommand(speaker, msg)
             isOrbiting = true
             isFollowing = false
             formationMode = "none"
-            if isHiding or shouldVoidHuntTarget(cmdTarget) then
-                beginVoidHideEngage(cmdTarget)
-            else
-                if not currentWeapon then
-                    currentWeapon = "Revolver"
-                    attackSubMode = "combat"
-                end
-                equipTool(currentWeapon or "Revolver")
-            end
-            status.Text = shouldVoidHuntTarget(cmdTarget) and ("Status: VOID LOOPKILL ? " .. cmdTarget.Name)
-                or (isHiding and ("Status: VOID LOOPKILL ? " .. cmdTarget.Name) or ("Status: LOOPKILLING " .. cmdTarget.Name))
+            beginCombatChase(cmdTarget)
+            status.Text = "Status: CHASE LK -> " .. cmdTarget.Name
         end
     elseif cleanCmd == "stack" or cleanCmd == "stk" or cleanCmd == "unstack" then
         targetQuery = getCommandTargetQuery(args, 2)
@@ -2761,10 +2817,10 @@ local function executeCommand(speaker, msg)
                 formationMode = "none"
                 isGlueFollowActive = true
                 if not currentWeapon then
-                    currentWeapon = "Revolver"
-                    attackSubMode = "combat"
+                    currentWeapon = "Knife"
+                    attackSubMode = "knife"
                 end
-                equipTool(currentWeapon or "Revolver")
+                equipTool(currentWeapon or "Knife")
                 status.Text = "Status: STACK " .. cmdTarget.Name
             else
                 status.Text = "Stack: player not found!"
@@ -2788,7 +2844,8 @@ local function executeCommand(speaker, msg)
             isFollowing = false
             isHiding = false
             formationMode = "none"
-            status.Text = "Status: STOMPING " .. cmdTarget.Name
+            beginCombatChase(cmdTarget)
+            status.Text = "Status: CHASE STOMP -> " .. cmdTarget.Name
         end
     elseif cleanCmd == "bring" or cleanCmd == "br" then
         cmdTarget = findPlayer(param)
@@ -2810,10 +2867,10 @@ local function executeCommand(speaker, msg)
             isHiding = false
             formationMode = "none"
             if not currentWeapon then
-                currentWeapon = "Revolver"
-                attackSubMode = "combat"
+                currentWeapon = "Knife"
+                attackSubMode = "knife"
             end
-            equipTool(currentWeapon or "Revolver")
+            equipTool(currentWeapon or "Knife")
             status.Text = "Status: BRINGING " .. cmdTarget.Name
         end
     elseif cleanCmd == "knock" or cleanCmd == "k" then
@@ -2832,17 +2889,8 @@ local function executeCommand(speaker, msg)
             isOrbiting = true
             isFollowing = false
             formationMode = "none"
-            if isHiding or shouldVoidHuntTarget(cmdTarget) then
-                beginVoidHideEngage(cmdTarget)
-            else
-                if not currentWeapon then
-                    currentWeapon = "Revolver"
-                    attackSubMode = "combat"
-                end
-                equipTool(currentWeapon or "Revolver")
-            end
-            status.Text = shouldVoidHuntTarget(cmdTarget) and ("Status: VOID HUNT ? " .. cmdTarget.Name)
-                or (isHiding and ("Status: VOID ENGAGE ? " .. cmdTarget.Name) or ("Status: KNOCKING " .. cmdTarget.Name))
+            beginCombatChase(cmdTarget)
+            status.Text = "Status: CHASE K -> " .. cmdTarget.Name
         end
     elseif cleanCmd == "knife" then
         attackSubMode = "knife"
@@ -3030,19 +3078,23 @@ RunService.RenderStepped:Connect(function()
     if isStomping and stompTargetName then
         local targetPlayer = findPlayer(stompTargetName)
         if targetPlayer then
-            local targetChar = getChar(targetPlayer)
+            local _, targetChar = getPlayerRootPart(targetPlayer)
             if not targetChar then return end
             local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
             local targetBE = targetChar:FindFirstChild("BodyEffects")
             local targetIsKnocked = (targetBE and targetBE:FindFirstChild("K.O") and targetBE["K.O"].Value == true) or (targetHum and targetHum.Health <= 0)
-            local normalTorso = targetChar:FindFirstChild("Torso") or targetChar:FindFirstChild("UpperTorso") or targetChar:FindFirstChild("HumanoidRootPart")
+            local normalTorso = targetChar:FindFirstChild("Torso") or targetChar:FindFirstChild("UpperTorso") or getCharRootPart(targetChar)
 
             if targetIsKnocked and normalTorso then
                 isOrbiting = false
-                if not isGlueFollowActive then
+                local stompCF = CFrame.new(normalTorso.Position + Vector3.new(0, 3.2, 0), normalTorso.Position + Vector3.new(0, 3.2, 1))
+                if shouldUseInfiniteChase(targetPlayer) then
+                    applyVoidHideProtection(char)
+                    snapVoidHuntCFrame(myHrp, stompCF)
+                elseif not isGlueFollowActive then
                     myHrp.AssemblyLinearVelocity = Vector3.zero
                     myHrp.AssemblyAngularVelocity = Vector3.zero
-                    myHrp.CFrame = CFrame.new(normalTorso.Position + Vector3.new(0, 3.2, 0), normalTorso.Position + Vector3.new(0, 3.2, 1))
+                    myHrp.CFrame = stompCF
                 end
                 local now = tick()
                 if now - lastStompETick >= 0.35 then
@@ -3135,19 +3187,26 @@ RunService.RenderStepped:Connect(function()
         if leaderHrp then
             local nearestEnemy = nil
             local voidHider = nil
+            local voidHiderScore = -1
             local shortestDist = 50.0
             local players = Players:GetPlayers()
             for i = 1, #players do
                 local p = players[i]
                 local isOwnerCheck = (ownerPlayer and p == ownerPlayer)
                 if p ~= leader and p ~= LocalPlayer and not isOwnerCheck and not isWhitelisted(p) then
-                    local pChar = getChar(p)
-                    local tHrp = pChar and pChar:FindFirstChild("HumanoidRootPart")
-                    local tHum = pChar and pChar:FindFirstChildOfClass("Humanoid")
-                    if tHrp and tHum and tHum.Health > 0 and not isCharacterKnocked(pChar) then
-                        if isVoidHidingPlayer(p) then
+                    local tHrp, pChar = getPlayerRootPart(p)
+                    if not pChar then continue end
+                    local tHum = pChar:FindFirstChildOfClass("Humanoid")
+                    if tHum and (tHum.Health <= 0 or isCharacterKnocked(pChar)) then continue end
+                    if isVoidHidingPlayer(p) then
+                        local pos = tHrp and tHrp.Position or getPartWorldPosition(pChar)
+                        local score = pos and (pos.Magnitude + getTargetWorldDistance(p)) or getTargetWorldDistance(p)
+                        if score > voidHiderScore then
+                            voidHiderScore = score
                             voidHider = p
                         end
+                    end
+                    if tHrp then
                         local dist = (tHrp.Position - leaderHrp.Position).Magnitude
                         if dist < shortestDist then
                             shortestDist = dist
@@ -3167,17 +3226,18 @@ RunService.RenderStepped:Connect(function()
                 formationMode = "none"
                 isGlueFollowActive = true
                 if newGuardTarget and not currentWeapon then
-                    currentWeapon = "Revolver"
-                    attackSubMode = "combat"
+                    currentWeapon = "Knife"
+                    attackSubMode = "knife"
                 end
-                if isHiding and newGuardTarget then
+                if newGuardTarget and shouldVoidHuntTarget(nearestEnemy) then
+                    pcall(beginVoidHideEngage, nearestEnemy)
+                    if releaseGlueFollowLock then releaseGlueFollowLock() end
+                    status.Text = "Status: VOID HUNT (GK) -> " .. nearestEnemy.Name
+                    status.TextColor3 = Color3.fromRGB(255, 80, 120)
+                elseif isHiding and newGuardTarget then
                     pcall(beginVoidHideEngage, nearestEnemy)
                     status.Text = "Status: VOID GUARD -> " .. nearestEnemy.Name
                     status.TextColor3 = Color3.fromRGB(255, 120, 80)
-                elseif newGuardTarget and shouldVoidHuntTarget(nearestEnemy) then
-                    pcall(beginVoidHideEngage, nearestEnemy)
-                    status.Text = "Status: VOID HUNT (GK) -> " .. nearestEnemy.Name
-                    status.TextColor3 = Color3.fromRGB(255, 80, 120)
                 elseif newGuardTarget then
                     status.Text = "Status: GK -> " .. nearestEnemy.Name
                     status.TextColor3 = Color3.fromRGB(100, 200, 255)
@@ -3256,16 +3316,20 @@ RunService.RenderStepped:Connect(function()
 
         if currentWeapon then
             equipTool(currentWeapon)
-        elseif shouldVoidHuntTarget(currentTarget) or isVoidHideEngaging() then
-            if currentWeapon ~= "Revolver" or attackSubMode ~= "combat" then
-                currentWeapon = "Revolver"
-                attackSubMode = "combat"
+        elseif shouldUseInfiniteChase(currentTarget) or isVoidHideEngaging() then
+            if currentWeapon ~= "Knife" or attackSubMode ~= "knife" then
+                currentWeapon = "Knife"
+                attackSubMode = "knife"
             end
-            equipTool("Revolver")
+            equipTool("Knife")
         end
 
         local activeTool = char:FindFirstChildOfClass("Tool")
-        local aimPart = getAimPart(targetChar) or targetChar:FindFirstChild("Head") or targetHrp
+        local voidHuntCombat = shouldUseInfiniteChase(currentTarget)
+        local aimPart = voidHuntCombat and getVoidHuntAimPart(targetChar)
+            or getAimPart(targetChar)
+            or targetChar:FindFirstChild("Head")
+            or targetHrp
         if aimPart then
             Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPart.Position)
         end
@@ -3278,7 +3342,7 @@ RunService.RenderStepped:Connect(function()
             else
                 isKnifeMode = false
                 local now = tick()
-                local voidHuntFire = shouldVoidHuntTarget(currentTarget)
+                local voidHuntFire = voidHuntCombat
                 local fireCd = voidHuntFire and C.VOID_HUNT_FIRE_COOLDOWN or 0.13
                 if aimPart and now - lastAutoFireTick >= fireCd then
                     lastAutoFireTick = now
@@ -3315,7 +3379,7 @@ RunService.RenderStepped:Connect(function()
 
         local altIndex, totalAlts = getAltIndex()
 
-        local voidHunt = shouldVoidHuntTarget(currentTarget)
+        local voidHunt = shouldUseInfiniteChase(currentTarget)
         local goalCF = voidHunt and buildVoidHuntCFrame(targetChar, altIndex, totalAlts)
             or buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
 
@@ -3345,7 +3409,7 @@ RunService.RenderStepped:Connect(function()
             local targetRoot = oChar and oChar:FindFirstChild("HumanoidRootPart")
             local targetHum = oChar and oChar:FindFirstChildOfClass("Humanoid")
             if targetRoot and targetHum then
-                local voidHuntMark = (currentTarget == otherPlayer and isOrbiting and shouldVoidHuntTarget(otherPlayer))
+                local voidHuntMark = (currentTarget == otherPlayer and isOrbiting and shouldUseInfiniteChase(otherPlayer))
                     or (isOrbiting and currentTarget == otherPlayer and isVoidHidingPlayer(otherPlayer))
                 if voidHuntMark and targetHum.Health > 0 and not isWhitelisted(otherPlayer) then
                     targetRoot.Size = Vector3.new(C.VOID_HUNT_HITBOX, C.VOID_HUNT_HITBOX, C.VOID_HUNT_HITBOX)
