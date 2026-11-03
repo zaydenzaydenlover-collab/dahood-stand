@@ -12,6 +12,10 @@ end
 
 getgenv().AntiAfkExecuted = true
 
+pcall(function()
+    warn("[Stando] init start")
+end)
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TextChatService = game:GetService("TextChatService")
@@ -20,11 +24,18 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local VirtualUser = game:GetService("VirtualUser")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
 local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
 local OWNER_NAME = "dudasgoodpuppy21ax97"
 local isUnloaded = false
+local resetInProgress = false
+local resetSpawnConn = nil
+local lastManualResetTick = 0
+local resetGraceUntil = 0
+local MANUAL_RESET_COOLDOWN = 2.5
+local RESET_GRACE_SEC = 4
 
 local WHITELISTED_USERS = {
     ["idan1235838"] = true,
@@ -58,7 +69,6 @@ local ARMY_USERS = {
     ["dudasgoodpuppy9ghlhk"] = true,
     ["dudasgoodpuppy21ax97"] = true,
     ["dudasgoodpuppyqz46fy"] = true,
-    ["PakistaniMobBoss"] = true,
     ["19z"] = true,
     ["muhzmyson"] = true,
     ["w_w20491"] = true,
@@ -72,6 +82,7 @@ local ARMY_USERS = {
     ["wveaklur"] = true,
     ["dandysworldlegend9"] = true,
     ["MattyBRapsFan20177"] = true,
+    ["PakistaniMobBoss"] = true,
 }
 
 local STANDO_PRESENCE_FOLDER = "StandoArmyPresence"
@@ -202,16 +213,197 @@ do
     repeat task.wait() until getChar(LocalPlayer) or tick() > deadline
 end
 
-local function fireHoodResetCharacter()
-    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
-    if mainEvent then
-        local ok = pcall(function() mainEvent:FireServer("ResetCharacter") end)
-        if ok then return true end
-    end
-    return false
+local isCharacterKnocked, hoodResetAttempt
+do
+local HOOD_RESET_CMDS = { "ResetCharacter", "Respawn", "Reset", "ReloadCharacter" }
+local HOOD_RESET_REMOTE_NAMES = {
+    "MainEvent",
+    "MainRE",
+    "MainRemote",
+    "MainRemoteEvent",
+    "MainFunction",
+    "UnreliableMainEvent",
+    "Main_Server",
+}
+
+local hoodResetRemotesCache = nil
+
+local function setHoodPlayerResetFlag(player)
+    player = player or LocalPlayer
+    pcall(function()
+        local flag = player:FindFirstChild("reset")
+        if not flag then
+            local ok, child = pcall(function() return player:WaitForChild("reset", 2) end)
+            flag = ok and child or nil
+        end
+        if not flag then
+            flag = Instance.new("BoolValue")
+            flag.Name = "reset"
+            flag.Parent = player
+        end
+        if flag:IsA("BoolValue") then
+            flag.Value = true
+        end
+    end)
 end
 
-local function isCharacterKnocked(char)
+local function prepareHoodRespawnState(char)
+    char = char or getChar(LocalPlayer) or LocalPlayer.Character
+    if not char then return end
+    pcall(function()
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            hum.Sit = false
+            hum.PlatformStand = false
+        end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.Anchored = false
+        end
+    end)
+    local be = char:FindFirstChild("BodyEffects")
+    if not be then return end
+    pcall(function()
+        local canRespawn = be:FindFirstChild("CAN_RESPAWN")
+        if canRespawn and canRespawn:IsA("BoolValue") then
+            canRespawn.Value = true
+        end
+        for _, grabName in ipairs({ "Grabbed", "GrabbedBy", "BeingGrabbed", "GRABBING" }) do
+            local grabbed = be:FindFirstChild(grabName)
+            if grabbed then
+                if grabbed:IsA("ObjectValue") then
+                    grabbed.Value = nil
+                elseif grabbed:IsA("BoolValue") then
+                    grabbed.Value = false
+                end
+            end
+        end
+        local ko = be:FindFirstChild("K.O")
+        if ko and ko:IsA("BoolValue") then
+            ko.Value = false
+        end
+    end)
+end
+
+local function collectHoodResetRemotes()
+    if hoodResetRemotesCache then return hoodResetRemotesCache end
+    local list = {}
+    local seen = {}
+    local function push(remote)
+        if not remote or seen[remote] then return end
+        if remote:IsA("RemoteEvent") or remote:IsA("RemoteFunction") then
+            seen[remote] = true
+            list[#list + 1] = remote
+        end
+    end
+    for i = 1, #HOOD_RESET_REMOTE_NAMES do
+        push(ReplicatedStorage:FindFirstChild(HOOD_RESET_REMOTE_NAMES[i]))
+    end
+    for _, child in ipairs(ReplicatedStorage:GetChildren()) do
+        local n = string.lower(child.Name)
+        if n:find("main") and (n:find("event") or n:find("remote") or n:find("function")) then
+            push(child)
+        end
+    end
+    hoodResetRemotesCache = list
+    return list
+end
+
+local function fireHoodResetRemotes()
+    local remotes = collectHoodResetRemotes()
+    for r = 1, #remotes do
+        local remote = remotes[r]
+        for c = 1, #HOOD_RESET_CMDS do
+            local cmd = HOOD_RESET_CMDS[c]
+            pcall(function()
+                if remote:IsA("RemoteFunction") then
+                    remote:InvokeServer(cmd)
+                else
+                    remote:FireServer(cmd)
+                end
+            end)
+        end
+    end
+    pcall(function()
+        local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+        if mainEvent and mainEvent.FireServer then
+            mainEvent:FireServer("ResetCharacter")
+            mainEvent:FireServer("Respawn")
+        end
+    end)
+end
+
+local function getAllLocalCharacterModels()
+    local list = {}
+    local seen = {}
+    local function add(char)
+        if char and char.Parent and not seen[char] then
+            seen[char] = true
+            list[#list + 1] = char
+        end
+    end
+    add(LocalPlayer.Character)
+    add(getChar(LocalPlayer))
+    return list
+end
+
+local function snapCharactersNearSpawnForReset()
+    local spawnCf = CFrame.new(0, 5, 0)
+    pcall(function()
+        local leaderHrp = getLeaderHrp()
+        if leaderHrp then
+            spawnCf = leaderHrp.CFrame * CFrame.new(0, 3, 0)
+        end
+    end)
+    for _, char in ipairs(getAllLocalCharacterModels()) do
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.Anchored = false
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+            for _ = 1, 18 do
+                hrp.CFrame = spawnCf
+            end
+        end
+    end
+end
+
+local function killLocalCharacterHard(char)
+    char = char or getChar(LocalPlayer) or LocalPlayer.Character
+    if not char then return end
+    prepareHoodRespawnState(char)
+    pcall(function()
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+            pcall(function() hum:TakeDamage(hum.MaxHealth * 4) end)
+            hum.Health = 0
+        end
+    end)
+    pcall(function() char:BreakJoints() end)
+    pcall(function()
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part:BreakJoints()
+            end
+        end
+    end)
+end
+
+local function fireStarterGuiReset()
+    pcall(function()
+        StarterGui:SetCore("ResetButtonCallback", true)
+    end)
+end
+
+local function fireHoodResetSignals()
+    fireStarterGuiReset()
+    if typeof(replicatesignal) == "function" then
+        pcall(function() replicatesignal(LocalPlayer.Kill) end)
+    end
+end
+
+local function knockedChar(char)
     if not char then return true end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum and hum.Health <= 0 then return true end
@@ -221,6 +413,35 @@ local function isCharacterKnocked(char)
         if be:FindFirstChild("Dead") and be.Dead.Value == true then return true end
     end
     return false
+end
+isCharacterKnocked = knockedChar
+
+local function hoodResetAttemptImpl(doSnap, hardMode)
+    setHoodPlayerResetFlag(LocalPlayer)
+    fireStarterGuiReset()
+    fireHoodResetRemotes()
+    fireHoodResetSignals()
+    if hardMode then
+        if doSnap then
+            snapCharactersNearSpawnForReset()
+        end
+        for _, char in ipairs(getAllLocalCharacterModels()) do
+            killLocalCharacterHard(char)
+        end
+    else
+        local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+        if mainEvent then
+            pcall(function() mainEvent:FireServer("ResetCharacter") end)
+        end
+        if typeof(replicatesignal) ~= "function" then
+            for _, char in ipairs(getAllLocalCharacterModels()) do
+                pcall(function() char:BreakJoints() end)
+            end
+        end
+    end
+end
+hoodResetAttempt = hoodResetAttemptImpl
+
 end
 
 local ownerPlayer = findPlayer(OWNER_NAME)
@@ -252,7 +473,7 @@ local function getLeaderHrp()
     return char and char:FindFirstChild("HumanoidRootPart")
 end
 
--- ANTI-AFK (minimal — keeps Delta script size down)
+-- ANTI-AFK (minimal   keeps Delta script size down)
 local thisoneissocoldww = Instance.new("ScreenGui")
 thisoneissocoldww.Name = "thisoneissocoldww"
 thisoneissocoldww.Parent = game.CoreGui
@@ -282,8 +503,6 @@ local isBringing = false
 local bringTargetName = nil
 local bringPhase = nil
 local bringPhaseTick = 0
-local BRING_HOVER_SEC = 3
-local BRING_DROP_SEC = 0.8
 local isManualTarget = false
 local isStacking = false
 local stackTargetName = nil
@@ -294,44 +513,223 @@ local glueSpot = nil
 local glueReal = nil
 local glueVelocity = nil
 local glueSpin = nil
+
+local function clearGluePhysics(root)
+    if root and sethiddenproperty then
+        pcall(function() sethiddenproperty(root, "PhysicsRepRootPart", nil) end)
+    end
+    glueSpot = nil
+end
+
 local isAntiStompActive = true
 local antiStompKoConn = nil
+local antiStompDiedConn = nil
 local lastAntiStompTick = 0
 local lastStompETick = 0
 
-local hitboxScaleSize = 30
-local defaultHitboxSize = Vector3.new(2, 2, 1)
-
-local FORMATION_SPACING = 4
-local FORMATION_SMOOTH = 0.55
-local FORMATION_SNAP_DISTANCE = 22
-local FORMATION_RING_RADIUS = 5.5
-local FORMATION_SHIELD_RADIUS = 1
-local FORMATION_BOX_HALF_W = 5
-local FORMATION_BOX_HALF_D = 4
-local FORMATION_TRI_SIDE = 8
-local FORMATION_WEDGE_STEP = 3.5
-local FORMATION_WEDGE_SPREAD = 0.92
-local COMBAT_ORBIT_RADIUS = 5.4
-local COMBAT_ORBIT_HEIGHT = 14
-local STACK_ORBIT_RADIUS = 2.85
-local GLUE_RENDER_STEP = "StandoGlueFollow"
-local VOID_HIDE_RX = 52000000
-local VOID_HIDE_RZ = 52000000
-local VOID_HIDE_RY_BASE = 72000000
-local VOID_HIDE_RY_AMP = 4500000
-local VOID_HIDE_WRITES = 20
-local VOID_HIDE_JITTER = 12000000
-local VOID_HIDE_SPIN = 38
-local VOID_KNIFE_PANIC_RANGE = 350
-local VOID_PANIC_PUSH = 38000000
-local VOID_HIDE_PART_SIZE = Vector3.new(0.05, 0.05, 0.05)
+local C = {
+    BRING_HOVER_SEC = 3,
+    BRING_DROP_SEC = 0.8,
+    hitboxScaleSize = 30,
+    defaultHitboxSize = Vector3.new(2, 2, 1),
+    FORMATION_SPACING = 4,
+    FORMATION_SMOOTH = 0.55,
+    FORMATION_SNAP_DISTANCE = 22,
+    FORMATION_RING_RADIUS = 5.5,
+    FORMATION_SHIELD_RADIUS = 1,
+    FORMATION_BOX_HALF_W = 5,
+    FORMATION_BOX_HALF_D = 4,
+    FORMATION_TRI_SIDE = 8,
+    FORMATION_WEDGE_STEP = 3.5,
+    FORMATION_WEDGE_SPREAD = 0.92,
+    COMBAT_ORBIT_RADIUS = 5.4,
+    COMBAT_ORBIT_HEIGHT = 14,
+    STACK_ORBIT_RADIUS = 2.85,
+    GLUE_RENDER_STEP = "StandoGlueFollow",
+    VOID_HUNT_RENDER_STEP = "StandoVoidHunt",
+    VOID_HIDE_RX = 5200000000,
+    VOID_HIDE_RZ = 5200000000,
+    VOID_HIDE_RY_BASE = 7200000000,
+    VOID_HIDE_RY_AMP = 450000000,
+    VOID_HIDE_WRITES = 20,
+    VOID_HIDE_JITTER = 1200000000,
+    VOID_HIDE_SPIN = 38,
+    VOID_KNIFE_PANIC_RANGE = 350,
+    VOID_PANIC_PUSH = 3800000000,
+    VOID_HIDE_PART_SIZE = Vector3.new(0.05, 0.05, 0.05),
+    VOID_HUNT_ORBIT_STUDS = 6000,
+    VOID_HUNT_ORIGIN_STUDS = 250000000,
+    VOID_HUNT_FAR_STUDS = 50000000,
+    VOID_HUNT_AIM_STUDS = 50000000000,
+    VOID_HUNT_WRITES = 56,
+    VOID_HUNT_HITBOX = 55,
+    VOID_HUNT_CLOSE_RADIUS = 2.1,
+    VOID_HUNT_FIRE_COOLDOWN = 0.07,
+}
 local voidHideSavedParts = {}
-local VOID_HUNT_ORBIT_STUDS = 12000
-local VOID_HUNT_ORIGIN_STUDS = 8000000
-local VOID_HUNT_AIM_STUDS = 150000000
-local VOID_HUNT_WRITES = 24
-local VOID_HUNT_HITBOX = 40
+
+local function clearVoidHideProtection(char)
+    if not char then
+        voidHideSavedParts = {}
+        return
+    end
+    for part, saved in pairs(voidHideSavedParts) do
+        if part and part.Parent and saved then
+            pcall(function()
+                part.Size = saved.size
+                part.CanCollide = saved.canCollide
+                part.Massless = saved.massless
+            end)
+        end
+    end
+    voidHideSavedParts = {}
+end
+
+local function applyVoidHideProtection(char)
+    if not char then return end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if not voidHideSavedParts[part] then
+                voidHideSavedParts[part] = {
+                    size = part.Size,
+                    canCollide = part.CanCollide,
+                    massless = part.Massless,
+                }
+            end
+            pcall(function()
+                part.Size = C.VOID_HIDE_PART_SIZE
+                part.CanCollide = false
+                part.Massless = true
+            end)
+        end
+    end
+end
+
+local function disconnectAntiStompListeners()
+    if antiStompKoConn then
+        antiStompKoConn:Disconnect()
+        antiStompKoConn = nil
+    end
+    if antiStompDiedConn then
+        antiStompDiedConn:Disconnect()
+        antiStompDiedConn = nil
+    end
+end
+
+local function rearmAntiStompAfterGrace(char)
+    task.delay(RESET_GRACE_SEC, function()
+        if isUnloaded then return end
+        isAntiStompActive = true
+        local c = getChar(LocalPlayer) or char
+        if c then
+            task.spawn(armAntiStomp, c)
+        end
+    end)
+end
+
+local function finishResetSpawn(char)
+    if isUnloaded then return end
+    resetInProgress = false
+    pcall(function() clearVoidHideProtection(char or getChar(LocalPlayer)) end)
+    pcall(function()
+        clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
+    end)
+    glueSpot = nil
+    glueDesync = false
+    isGlueFollowActive = true
+    if startStand then
+        startStand()
+    end
+    rearmAntiStompAfterGrace(char)
+    if status and status.Parent then
+        status.Text = "Status: RESET OK | Anti stomp ON"
+        status.TextColor3 = Color3.fromRGB(120, 255, 160)
+    end
+end
+
+local function hoodPerformResetBurst(quickMode, singleShot)
+    if resetInProgress then return end
+    resetInProgress = true
+    glueSpot = nil
+    glueDesync = false
+
+    local priorChar = LocalPlayer.Character
+    isOrbiting = false
+    isHiding = false
+
+    pcall(function()
+        clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
+    end)
+    pcall(function()
+        clearVoidHideProtection(getChar(LocalPlayer))
+    end)
+
+    isAntiStompActive = false
+    disconnectAntiStompListeners()
+
+    local useHard = false
+    local attempts = singleShot and 1 or (quickMode and 1 or 2)
+
+    task.spawn(function()
+        local ok = pcall(function()
+            for i = 1, attempts do
+                if isUnloaded then break end
+                if LocalPlayer.Character ~= priorChar or not LocalPlayer.Character then
+                    break
+                end
+                hoodResetAttempt(i == 1, useHard)
+                if attempts > 1 then
+                    task.wait(quickMode and 0.14 or 0.22)
+                end
+            end
+        end)
+
+        local spawned = false
+        local conn
+        conn = LocalPlayer.CharacterAdded:Connect(function(newChar)
+            spawned = true
+            if conn then
+                conn:Disconnect()
+                conn = nil
+            end
+            task.spawn(function()
+                pcall(function() newChar:WaitForChild("Humanoid", 12) end)
+                pcall(function() newChar:WaitForChild("HumanoidRootPart", 12) end)
+                finishResetSpawn(newChar)
+            end)
+        end)
+
+        task.wait(singleShot and 8 or 10)
+        if conn then
+            conn:Disconnect()
+            conn = nil
+        end
+
+        if not spawned and not isUnloaded then
+            if LocalPlayer.Character and LocalPlayer.Character ~= priorChar then
+                finishResetSpawn(LocalPlayer.Character)
+            else
+                resetInProgress = false
+                isGlueFollowActive = true
+                isAntiStompActive = true
+                rearmAntiStompAfterGrace(LocalPlayer.Character)
+                if status and status.Parent then
+                    status.Text = ok and "Status: RESET (tap Rejoin if stuck)" or "Status: RESET ERR"
+                    status.TextColor3 = Color3.fromRGB(255, 180, 100)
+                end
+            end
+        elseif not spawned then
+            resetInProgress = false
+            isAntiStompActive = true
+            rearmAntiStompAfterGrace(LocalPlayer.Character)
+        end
+    end)
+end
+
+local function fireHoodResetCharacter()
+    hoodResetAttempt(false, false)
+    return true
+end
 
 -- ==========================================
 -- SAFE RIGHT-CLICK HOLD FOR GUNS (ADS)
@@ -535,17 +933,36 @@ local function getTargetWorldDistance(targetPlayer)
     return (tHrp.Position - myHrp.Position).Magnitude
 end
 
+local function isExtremeWorldPosition(pos)
+    if not pos then return false end
+    if pos.Magnitude >= C.VOID_HUNT_ORIGIN_STUDS then return true end
+    if math.abs(pos.X) >= C.VOID_HUNT_ORIGIN_STUDS
+        or math.abs(pos.Y) >= C.VOID_HUNT_ORIGIN_STUDS
+        or math.abs(pos.Z) >= C.VOID_HUNT_ORIGIN_STUDS then
+        return true
+    end
+    if math.abs(pos.Y) >= C.VOID_HUNT_FAR_STUDS then return true end
+    return false
+end
+
 local function isVoidHidingPlayer(player)
     if not player then return false end
     local c = getChar(player) or player.Character
     local hrp = c and c:FindFirstChild("HumanoidRootPart")
     if not hrp then return false end
-    if hrp.Position.Magnitude >= VOID_HUNT_ORIGIN_STUDS then
+    if isExtremeWorldPosition(hrp.Position) then return true end
+    local leaderHrp = getLeaderHrp()
+    if leaderHrp and isExtremeWorldPosition(hrp.Position - leaderHrp.Position) then
         return true
     end
-    local leaderHrp = getLeaderHrp()
-    if leaderHrp and (hrp.Position - leaderHrp.Position).Magnitude >= VOID_HUNT_ORIGIN_STUDS then
-        return true
+    local myChar = getChar(LocalPlayer)
+    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if myHrp then
+        local sep = (hrp.Position - myHrp.Position).Magnitude
+        if sep >= C.VOID_HUNT_ORBIT_STUDS and isExtremeWorldPosition(hrp.Position) then
+            return true
+        end
+        if sep >= C.VOID_HUNT_ORIGIN_STUDS then return true end
     end
     return false
 end
@@ -553,12 +970,21 @@ end
 local function shouldVoidHuntTarget(player)
     if not player then return false end
     if isVoidHidingPlayer(player) then return true end
-    return getTargetWorldDistance(player) > VOID_HUNT_ORBIT_STUDS
+    if getTargetWorldDistance(player) > C.VOID_HUNT_ORBIT_STUDS then return true end
+    local c = getChar(player) or player.Character
+    local hrp = c and c:FindFirstChild("HumanoidRootPart")
+    if hrp and isExtremeWorldPosition(hrp.Position) then return true end
+    return false
+end
+
+local function isVoidHuntActive()
+    if resetInProgress then return false end
+    return isOrbiting and currentTarget ~= nil and shouldVoidHuntTarget(currentTarget)
 end
 
 local function getSilentAimMaxDistance()
     if currentTarget and shouldVoidHuntTarget(currentTarget) then
-        return VOID_HUNT_AIM_STUDS
+        return C.VOID_HUNT_AIM_STUDS
     end
     return SilentAim.MaxDistance
 end
@@ -567,7 +993,7 @@ local function snapVoidHuntCFrame(hrp, cf)
     if not hrp or not cf then return end
     hrp.AssemblyLinearVelocity = Vector3.zero
     hrp.AssemblyAngularVelocity = Vector3.zero
-    for _ = 1, VOID_HUNT_WRITES do
+    for _ = 1, C.VOID_HUNT_WRITES do
         hrp.CFrame = cf
     end
 end
@@ -750,14 +1176,15 @@ local status = Instance.new("TextLabel")
 status.Size = UDim2.new(1, 0, 0, 20)
 status.Position = UDim2.new(0, 0, 0, 22)
 status.BackgroundTransparency = 1
-status.Text = "Status: FOLLOWING"
+status.Text = "Status: FOLLOWING | Anti stomp ON"
 status.TextColor3 = Color3.fromRGB(100, 200, 255)
 status.TextSize = 11
 status.Font = Enum.Font.SourceSans
 status.Parent = frame
 
 local function shouldSkipAntiStomp()
-    if isUnloaded or not isAntiStompActive then return true end
+    if isUnloaded or resetInProgress or not isAntiStompActive then return true end
+    if tick() < resetGraceUntil then return true end
     return false
 end
 
@@ -792,11 +1219,17 @@ local function isVoidHideEngaging()
 end
 
 local function shouldParkInVoid()
+    if resetInProgress then return false end
     return isHiding and not isVoidHideEngaging()
 end
 
 local function beginVoidHideEngage(targetPlayer)
     clearVoidHideProtection(getChar(LocalPlayer))
+    glueSpot = nil
+    glueDesync = false
+    clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
+    local c = getChar(LocalPlayer)
+    if c then applyVoidHideProtection(c) end
     currentWeapon = "Revolver"
     attackSubMode = "combat"
     equipTool("Revolver")
@@ -806,15 +1239,8 @@ local function triggerForceReset()
     local now = tick()
     if now - lastAntiStompTick < 0.45 then return end
     lastAntiStompTick = now
-    if typeof(replicatesignal) == "function" then
-        pcall(function() replicatesignal(LocalPlayer.Kill) end)
-        return
-    end
-    if fireHoodResetCharacter() then return end
-    local char = getChar(LocalPlayer)
-    if char then
-        pcall(function() char:BreakJoints() end)
-    end
+    resetGraceUntil = now + RESET_GRACE_SEC
+    hoodPerformResetBurst(true, true)
 end
 
 local function triggerAntiStompKill()
@@ -844,7 +1270,12 @@ local function armAntiStomp(character)
 
     local hum = character:FindFirstChildOfClass("Humanoid")
     if hum then
-        hum.Died:Connect(function()
+        if antiStompDiedConn then
+            antiStompDiedConn:Disconnect()
+            antiStompDiedConn = nil
+        end
+        antiStompDiedConn = hum.Died:Connect(function()
+            if resetInProgress or tick() < resetGraceUntil then return end
             triggerCombatDeathReset()
         end)
     end
@@ -881,9 +1312,15 @@ end
 
 local function setAntiStomp(active)
     isAntiStompActive = active
-    if not active and antiStompKoConn then
-        antiStompKoConn:Disconnect()
-        antiStompKoConn = nil
+    if not active then
+        if antiStompKoConn then
+            antiStompKoConn:Disconnect()
+            antiStompKoConn = nil
+        end
+        if antiStompDiedConn then
+            antiStompDiedConn:Disconnect()
+            antiStompDiedConn = nil
+        end
     end
     if active then
         local c = getChar(LocalPlayer)
@@ -961,7 +1398,7 @@ end
 
 local function fullStopAndReturn()
     setRightClick(false)
-    clearVoidHideProtection(getChar(LocalPlayer))
+    pcall(function() clearVoidHideProtection(getChar(LocalPlayer)) end)
     isOrbiting = false
     isHiding = false
     isLoopkill = false
@@ -989,15 +1426,54 @@ local function fullStopAndReturn()
     status.TextColor3 = Color3.fromRGB(100, 200, 255)
 end
 
+local function clearCombatStateForReset()
+    setRightClick(false)
+    isOrbiting = false
+    isHiding = false
+    isLoopkill = false
+    loopkillTargetName = nil
+    isStomping = false
+    stompTargetName = nil
+    isBringing = false
+    bringTargetName = nil
+    bringPhase = nil
+    isStacking = false
+    stackTargetName = nil
+    isManualTarget = false
+    isGuardActive = false
+    currentTarget = nil
+    currentWeapon = nil
+    formationMode = "none"
+    standPositionMode = "default"
+    isFollowing = false
+    isGlueFollowActive = false
+    glueSpot = nil
+    glueDesync = false
+    pcall(function() clearVoidHideProtection(getChar(LocalPlayer)) end)
+    pcall(function()
+        clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
+    end)
+    pcall(function() unequipAll() end)
+end
+
 local function performForceReset()
-    fullStopAndReturn()
-    if not fireHoodResetCharacter() then
-        local char = getChar(LocalPlayer)
-        if char then
-            pcall(function() char:BreakJoints() end)
-        end
+    local now = tick()
+    if resetInProgress then return end
+    if now - lastManualResetTick < MANUAL_RESET_COOLDOWN then return end
+    lastManualResetTick = now
+    resetGraceUntil = now + RESET_GRACE_SEC
+    clearCombatStateForReset()
+
+    if resetSpawnConn then
+        resetSpawnConn:Disconnect()
+        resetSpawnConn = nil
     end
-    status.Text = "Status: RESET"
+
+    if status and status.Parent then
+        status.Text = "Status: RESETTING..."
+        status.TextColor3 = Color3.fromRGB(255, 220, 120)
+    end
+    hoodPerformResetBurst(false, true)
 end
 
 local function stopAndHide()
@@ -1033,6 +1509,7 @@ end
 local function startStand()
     clearVoidHideProtection(getChar(LocalPlayer))
     isFollowing = true
+    isGlueFollowActive = true
     isOrbiting = false
     isHiding = false
     isLoopkill = false
@@ -1092,28 +1569,40 @@ end
 
 local function ejectScript()
     isUnloaded = true
+    resetInProgress = false
+    if resetSpawnConn then
+        resetSpawnConn:Disconnect()
+        resetSpawnConn = nil
+    end
     isAntiStompActive = false
     if antiStompKoConn then
         antiStompKoConn:Disconnect()
         antiStompKoConn = nil
     end
+    if antiStompDiedConn then
+        antiStompDiedConn:Disconnect()
+        antiStompDiedConn = nil
+    end
+    pcall(fullStopAndReturn)
     isGlueFollowActive = false
-    clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
-    pcall(function() RunService:UnbindFromRenderStep(GLUE_RENDER_STEP) end)
-    setRightClick(false)
-    stopSyncDance()
-    removeGunHandlerHook()
+    pcall(function()
+        clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
+    end)
+    pcall(function() RunService:UnbindFromRenderStep(C.GLUE_RENDER_STEP) end)
+    pcall(function() RunService:UnbindFromRenderStep(C.VOID_HUNT_RENDER_STEP) end)
+    pcall(setRightClick, false)
+    pcall(stopSyncDance)
+    pcall(removeGunHandlerHook)
     if fovCircle then pcall(function() fovCircle:Remove() end) end
-    if screenGui then screenGui:Destroy() end
     pcall(function()
         if standoPresenceValue then
             standoPresenceValue:Destroy()
             standoPresenceValue = nil
         end
     end)
+    if screenGui then pcall(function() screenGui:Destroy() end) end
     getgenv().StandoUnload = nil
     getgenv().StandoActive = nil
-    fullStopAndReturn()
 end
 
 local lastReloadTick = 0
@@ -1297,72 +1786,35 @@ local function getNearestThreatRangeStuds(myHrp)
     return nearest
 end
 
-local function clearVoidHideProtection(char)
-    if not char then
-        voidHideSavedParts = {}
-        return
-    end
-    for part, saved in pairs(voidHideSavedParts) do
-        if part and part.Parent and saved then
-            pcall(function()
-                part.Size = saved.size
-                part.CanCollide = saved.canCollide
-                part.Massless = saved.massless
-            end)
-        end
-    end
-    voidHideSavedParts = {}
-end
-
-local function applyVoidHideProtection(char)
-    if not char then return end
-    for _, part in ipairs(char:GetDescendants()) do
-        if part:IsA("BasePart") then
-            if not voidHideSavedParts[part] then
-                voidHideSavedParts[part] = {
-                    size = part.Size,
-                    canCollide = part.CanCollide,
-                    massless = part.Massless,
-                }
-            end
-            pcall(function()
-                part.Size = VOID_HIDE_PART_SIZE
-                part.CanCollide = false
-                part.Massless = true
-            end)
-        end
-    end
-end
-
 local function applyVoidHideCFrame(myHrp)
     if not myHrp then return end
     myHrp.Anchored = false
     myHrp.AssemblyLinearVelocity = Vector3.zero
     myHrp.AssemblyAngularVelocity = Vector3.zero
     local altIndex, totalAlts = getAltIndex()
-    local timeVal = tick() * VOID_HIDE_SPIN
+    local timeVal = tick() * C.VOID_HIDE_SPIN
     local offsetAngle = ((altIndex - 1) / math.max(1, totalAlts)) * (2 * math.pi)
-    local rx = math.sin(timeVal + offsetAngle) * VOID_HIDE_RX
-    local rz = math.cos(timeVal * 0.9 + offsetAngle) * VOID_HIDE_RZ
-    local ry = VOID_HIDE_RY_BASE + (math.sin(timeVal * 2 + altIndex) * VOID_HIDE_RY_AMP)
-    rx = rx + math.random(-VOID_HIDE_JITTER, VOID_HIDE_JITTER)
-    rz = rz + math.random(-VOID_HIDE_JITTER, VOID_HIDE_JITTER)
-    ry = ry + math.random(-VOID_HIDE_JITTER, VOID_HIDE_JITTER)
+    local rx = math.sin(timeVal + offsetAngle) * C.VOID_HIDE_RX
+    local rz = math.cos(timeVal * 0.9 + offsetAngle) * C.VOID_HIDE_RZ
+    local ry = C.VOID_HIDE_RY_BASE + (math.sin(timeVal * 2 + altIndex) * C.VOID_HIDE_RY_AMP)
+    rx = rx + math.random(-C.VOID_HIDE_JITTER, C.VOID_HIDE_JITTER)
+    rz = rz + math.random(-C.VOID_HIDE_JITTER, C.VOID_HIDE_JITTER)
+    ry = ry + math.random(-C.VOID_HIDE_JITTER, C.VOID_HIDE_JITTER)
     local threatRange = getNearestThreatRangeStuds(myHrp)
-    if threatRange < VOID_KNIFE_PANIC_RANGE then
-        local push = VOID_PANIC_PUSH + (VOID_KNIFE_PANIC_RANGE - threatRange) * 150000
+    if threatRange < C.VOID_KNIFE_PANIC_RANGE then
+        local push = C.VOID_PANIC_PUSH + (C.VOID_KNIFE_PANIC_RANGE - threatRange) * 150000
         rx = rx + push * (0.6 + math.random())
         rz = rz + push * (0.6 + math.random())
         ry = ry + push * (0.35 + math.random() * 0.5)
     end
     local cf = CFrame.new(rx, ry, rz)
-    for _ = 1, VOID_HIDE_WRITES do
+    for _ = 1, C.VOID_HIDE_WRITES do
         myHrp.CFrame = cf
     end
 end
 
 local function runVoidHideParkTick()
-    if not shouldParkInVoid() then return end
+    if resetInProgress or not shouldParkInVoid() then return end
     local char = getChar(LocalPlayer)
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
@@ -1515,8 +1967,8 @@ end
 -- Host = apex; alts fill rows behind in a V (pair left/right, odd alt centers last row).
 local function getWedgeWorldPosition(leaderHrp, altIndex, totalAlts)
     local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
-    local step = FORMATION_WEDGE_STEP
-    local spread = FORMATION_WEDGE_SPREAD
+    local step = C.FORMATION_WEDGE_STEP
+    local spread = C.FORMATION_WEDGE_SPREAD
     totalAlts = math.max(1, totalAlts)
     altIndex = math.clamp(altIndex, 1, totalAlts)
 
@@ -1552,12 +2004,12 @@ local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
     mode = mode or formationMode
 
     if mode == "box" then
-        local lx, lz = getBoxLocalPosition(altIndex, totalAlts, FORMATION_BOX_HALF_W, FORMATION_BOX_HALF_D)
+        local lx, lz = getBoxLocalPosition(altIndex, totalAlts, C.FORMATION_BOX_HALF_W, C.FORMATION_BOX_HALF_D)
         return formationCFrameFaceHost(leaderHrp, formationLocalToWorld(leaderHrp, lx, lz))
     end
 
     if mode == "triangle" then
-        local goalPos = getTriangleWorldPosition(leaderHrp, altIndex, totalAlts, FORMATION_TRI_SIDE)
+        local goalPos = getTriangleWorldPosition(leaderHrp, altIndex, totalAlts, C.FORMATION_TRI_SIDE)
         return formationCFrameFaceHost(leaderHrp, goalPos)
     end
 
@@ -1566,7 +2018,7 @@ local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
         return formationCFrameFaceForward(leaderHrp, goalPos)
     end
 
-    local radius = math.clamp(FORMATION_RING_RADIUS + (totalAlts - 1) * 0.15, 4.5, 7)
+    local radius = math.clamp(C.FORMATION_RING_RADIUS + (totalAlts - 1) * 0.15, 4.5, 7)
     if mode ~= "circle" and mode ~= "shield" and mode ~= "none" and mode ~= "sit" then
         mode = "circle"
     end
@@ -1574,7 +2026,7 @@ local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
         mode = "circle"
     end
     if mode == "shield" then
-        radius = FORMATION_SHIELD_RADIUS
+        radius = C.FORMATION_SHIELD_RADIUS
     end
 
     local center = leaderHrp.Position
@@ -1605,7 +2057,7 @@ local function getFormationOffset(mode, altIndex, totalAlts)
     totalAlts = math.max(1, totalAlts)
     altIndex = math.clamp(altIndex, 1, totalAlts)
     if mode == "line" then
-        local spacing = FORMATION_SPACING
+        local spacing = C.FORMATION_SPACING
         local totalWidth = (totalAlts - 1) * spacing
         return Vector3.new(-totalWidth * 0.5 + (altIndex - 1) * spacing, 0, -3)
     end
@@ -1623,13 +2075,13 @@ local function applyFormationFollow(myHrp, leaderHrp, mode, altIndex, totalAlts)
 
     myHrp.AssemblyAngularVelocity = Vector3.zero
     local dist = (goalCFrame.Position - myHrp.Position).Magnitude
-    if dist >= FORMATION_SNAP_DISTANCE then
+    if dist >= C.FORMATION_SNAP_DISTANCE then
         myHrp.AssemblyLinearVelocity = Vector3.zero
         myHrp.CFrame = goalCFrame
         return
     end
 
-    local alpha = math.clamp(FORMATION_SMOOTH + (dist / 50), 0.55, 0.92)
+    local alpha = math.clamp(C.FORMATION_SMOOTH + (dist / 50), 0.55, 0.92)
     myHrp.AssemblyLinearVelocity = Vector3.zero
     myHrp.CFrame = myHrp.CFrame:Lerp(goalCFrame, alpha)
 end
@@ -1644,7 +2096,7 @@ end
 
 local function buildCombatOrbitCFrame(targetPos, altIndex, totalAlts)
     totalAlts = math.max(1, totalAlts)
-    local orbitRadius = (isStacking and STACK_ORBIT_RADIUS) or COMBAT_ORBIT_RADIUS
+    local orbitRadius = (isStacking and C.STACK_ORBIT_RADIUS) or C.COMBAT_ORBIT_RADIUS
     if standPositionMode == "hidden" then
         return CFrame.new(targetPos - Vector3.new(0, 5, 0), targetPos)
     end
@@ -1656,10 +2108,29 @@ local function buildCombatOrbitCFrame(targetPos, altIndex, totalAlts)
     )
     local yLift = 0
     if standPositionMode == "above" or standPositionMode == "sky" then
-        yLift = COMBAT_ORBIT_HEIGHT
+        yLift = C.COMBAT_ORBIT_HEIGHT
     end
     local goalPos = targetPos + attackOffset + Vector3.new(0, yLift, 0)
     return CFrame.new(goalPos, targetPos)
+end
+
+local function buildVoidHuntCFrame(theirChar, altIndex, totalAlts)
+    if not theirChar then return nil end
+    local aimPart = getAimPart(theirChar)
+        or theirChar:FindFirstChild("HumanoidRootPart")
+        or theirChar:FindFirstChild("Head")
+    if not aimPart then return nil end
+    totalAlts = math.max(1, totalAlts or 1)
+    altIndex = math.clamp(altIndex or 1, 1, totalAlts)
+    local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
+    local ring = C.VOID_HUNT_CLOSE_RADIUS + (altIndex - 1) * 0.08
+    local offset = Vector3.new(
+        math.cos(spreadAngle) * ring,
+        1.1 + ((altIndex - 1) % 3) * 0.35,
+        math.sin(spreadAngle) * ring
+    )
+    local goalPos = aimPart.Position + offset
+    return CFrame.new(goalPos, aimPart.Position)
 end
 
 local function getGlueCombatGoalCFrame(orbitPart, altIndex, totalAlts)
@@ -1726,16 +2197,25 @@ local function getGlueStompGoalCFrame(torso, altIndex, totalAlts)
 end
 
 local function isGlueMovementActive()
-    if isUnloaded or not isGlueFollowActive or shouldParkInVoid() then return false end
+    if isUnloaded or resetInProgress or not isGlueFollowActive or shouldParkInVoid() then return false end
+    if isVoidHuntActive() then return false end
     if isStomping or isBringing then return true end
     return isFollowing or isOrbiting
 end
 
-local function clearGluePhysics(root)
-    if root and sethiddenproperty then
-        pcall(function() sethiddenproperty(root, "PhysicsRepRootPart", nil) end)
-    end
+local function runVoidHuntMaintain()
+    if not isVoidHuntActive() then return end
+    local char = getChar(LocalPlayer)
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
     glueSpot = nil
+    clearGluePhysics(hrp)
+    local tChar = getChar(currentTarget) or currentTarget.Character
+    if not tChar then return end
+    applyVoidHideProtection(char)
+    local altIndex, totalAlts = getAltIndex()
+    local goalCF = buildVoidHuntCFrame(tChar, altIndex, totalAlts)
+    if goalCF then snapVoidHuntCFrame(hrp, goalCF) end
 end
 
 local function releaseGlueFollowLock()
@@ -1861,14 +2341,25 @@ RunService.Heartbeat:Connect(function()
     pcall(runVoidHideParkTick)
 end)
 
+RunService.Heartbeat:Connect(function()
+    pcall(runVoidHuntMaintain)
+end)
+
 pcall(function()
     RunService.PreSimulation:Connect(function()
         pcall(runVoidHideParkTick)
+        pcall(runVoidHuntMaintain)
     end)
 end)
 
 pcall(function()
-    RunService:BindToRenderStep(GLUE_RENDER_STEP, Enum.RenderPriority.First.Value, function()
+    RunService:BindToRenderStep(C.VOID_HUNT_RENDER_STEP, Enum.RenderPriority.Last.Value, function()
+        pcall(runVoidHuntMaintain)
+    end)
+end)
+
+pcall(function()
+    RunService:BindToRenderStep(C.GLUE_RENDER_STEP, Enum.RenderPriority.First.Value, function()
         if not isGlueMovementActive() then return end
         local myChar = getChar(LocalPlayer)
         local root = myChar and myChar:FindFirstChild("HumanoidRootPart")
@@ -1894,9 +2385,9 @@ UserInputService.InputBegan:Connect(function(input, typing)
 end)
 
 makeButton("Stand / Follow Me", 48, startStand)
-makeButton("Full Stop (.stop)", 74, fullStopAndReturn)
+makeButton("Full Stop (.stop)", 74, function() fullStopAndReturn() end)
 makeButton("Toggle GKill (.gk)", 100, toggleGKill)
-makeButton("Force Reset (.reset)", 126, performForceReset)
+makeButton("Force Reset (.reset)", 126, function() performForceReset() end)
 makeButton("Equip Revolver", 152, function() currentWeapon = "Revolver"; attackSubMode = "combat"; equipTool("Revolver"); status.Text = "Weapon: Revolver" end)
 makeButton("Equip Knife", 178, function() currentWeapon = "Knife"; attackSubMode = "knife"; equipTool("Knife"); status.Text = "Weapon: Knife" end)
 makeButton("Formation: Circle", 204, function() formationMode = "circle"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; status.Text = "Formation: Circle (surround host)" end)
@@ -1922,7 +2413,7 @@ makeButton("Low GFX", 360, function()
     status.Text = "Low GFX Applied"
 end)
 makeButton("Rejoin Server", 386, function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
-makeButton("Eject / Unload (.eject)", 412, ejectScript)
+makeButton("Eject / Unload (.eject)", 412, function() ejectScript() end)
 makeButton("Toggle Glue (.glue)", 438, function() toggleGlueFollow() end)
 makeButton("Anti Stomp (.as)", 464, function() toggleAntiStomp() end)
 makeButton("Toggle Menu View", 490, function() frame.Visible = not frame.Visible end)
@@ -1965,39 +2456,98 @@ local function getCommandTargetQuery(args, startAt)
     return table.concat(args, " ", startAt)
 end
 
+local function normalizeCmdToken(token)
+    if not token or token == "" then return "" end
+    return string.lower(token):gsub("^[%./!\\/#:]+", ""):gsub("[%,;:]+$", "")
+end
+
+local function isStopCmdToken(token)
+    local clean = normalizeCmdToken(token)
+    if clean == "" or clean == "stopdance" then return false end
+    if clean == "stop" or clean == "stopp" or clean == "stp" or clean == "halt"
+        or clean == "unequip" or clean == "fullstop" or clean == "cancel" or clean == "abort"
+        or clean == "uns" or clean == "unstomp" or clean == "unst" or clean == "end" then
+        return true
+    end
+    return clean:match("^stop+p?$") ~= nil
+end
+
+local function messageRequestsStop(message)
+    if not message or message == "" then return false end
+    local trimmed = string.lower(message):gsub("^[%./!\\/#%s]+", ""):gsub("%s+$", "")
+    if trimmed == "" or trimmed == "stopdance" then return false end
+    if isStopCmdToken(trimmed) then return true end
+    local first = trimmed:match("^(%S+)")
+    return first and isStopCmdToken(first)
+end
+
+local function resolveChatSender(textSource)
+    if textSource and textSource.UserId then
+        local byId = Players:GetPlayerByUserId(textSource.UserId)
+        if byId then return byId end
+    end
+    if textSource and textSource.Name and textSource.Name ~= "" then
+        return findPlayer(textSource.Name)
+    end
+    return nil
+end
+
 local function executeCommand(speaker, msg)
     if isUnloaded or not msg or not speaker then return end
+
+    local args = {}
+    for word in string.gmatch(msg, "%S+") do table.insert(args, word) end
+    local rawCmd = args[1] or ""
+    local cleanCmdEarly = normalizeCmdToken(rawCmd)
+    local param = args[2]
+    local cleanCmd = normalizeCmdToken(rawCmd)
+    local targetQuery, resetTarget, targetUser, cmdTarget, cmdOk, cmdMsg
+    local pLower, sayText, glueTarget, asTarget, host, altIndex
+
+    if cleanCmdEarly == "reset" or cleanCmdEarly == "forcereset" or cleanCmdEarly == "fr" then
+        if speaker == LocalPlayer then
+            targetQuery = getCommandTargetQuery(args, 2)
+            if not targetQuery or targetQuery == "" then
+                performForceReset()
+                return
+            end
+            resetTarget = findPlayer(targetQuery)
+            if resetTarget == LocalPlayer then
+                performForceReset()
+                return
+            end
+        end
+    end
 
     local isOwner = speaker and (string.lower(speaker.Name) == string.lower(OWNER_NAME) or string.lower(speaker.DisplayName) == string.lower(OWNER_NAME))
     local isAuthorized = isOwner or (grantedUser and speaker == grantedUser)
     if not isAuthorized then return end
 
-    local args = {}
-    for word in string.gmatch(msg, "%S+") do table.insert(args, word) end
-    local rawCmd = args[1] or ""
-    local param = args[2]
-    local cleanCmd = string.lower(rawCmd):gsub("^[%./!]+", "")
+    if messageRequestsStop(msg) then
+        fullStopAndReturn()
+        return
+    end
 
     if cleanCmd == "eject" or cleanCmd == "unload" then
         if isOwner then ejectScript() end
     elseif cleanCmd == "give" and isOwner then
-        local targetUser = findPlayer(param)
+        targetUser = findPlayer(param)
         if targetUser then grantedUser = targetUser; status.Text = "Access given to: " .. targetUser.Name
         else status.Text = "Player not found!" end
     elseif cleanCmd == "return" then
         if isOwner or (grantedUser and speaker == grantedUser) then grantedUser = nil; status.Text = "Access returned to owner." end
     elseif (cleanCmd == "wl" or cleanCmd == "whitelist") and isOwner then
-        local ok, msg = addRuntimeWhitelist(findPlayer(param))
-        status.Text = ok and msg or (msg or "WL: player not found!")
+        cmdOk, cmdMsg = addRuntimeWhitelist(findPlayer(param))
+        status.Text = cmdOk and cmdMsg or (cmdMsg or "WL: player not found!")
     elseif (cleanCmd == "unwl" or cleanCmd == "unwhitelist") and isOwner then
-        local ok, msg = removeRuntimeWhitelist(findPlayer(param))
-        status.Text = ok and msg or (msg or "WL: player not found!")
+        cmdOk, cmdMsg = removeRuntimeWhitelist(findPlayer(param))
+        status.Text = cmdOk and cmdMsg or (cmdMsg or "WL: player not found!")
     elseif (cleanCmd == "army" or cleanCmd == "alt") and isOwner then
-        local ok, msg = addRuntimeArmy(findPlayer(param))
-        status.Text = ok and msg or (msg or "Army: player not found!")
+        cmdOk, cmdMsg = addRuntimeArmy(findPlayer(param))
+        status.Text = cmdOk and cmdMsg or (cmdMsg or "Army: player not found!")
     elseif (cleanCmd == "unarmy" or cleanCmd == "unalt") and isOwner then
-        local ok, msg = removeRuntimeArmy(findPlayer(param))
-        status.Text = ok and msg or (msg or "Army: player not found!")
+        cmdOk, cmdMsg = removeRuntimeArmy(findPlayer(param))
+        status.Text = cmdOk and cmdMsg or (cmdMsg or "Army: player not found!")
     elseif cleanCmd == "dance" or cleanCmd == "syncdance" then
         isDanceEnabled = not isDanceEnabled
         if not isDanceEnabled then stopSyncDance() end
@@ -2006,7 +2556,7 @@ local function executeCommand(speaker, msg)
         isDanceEnabled = false
         stopSyncDance()
         status.Text = "Sync Dance: OFF"
-    elseif cleanCmd == "stop" or cleanCmd == "unequip" or cleanCmd == "fullstop" then
+    elseif isStopCmdToken(cleanCmd) then
         fullStopAndReturn()
     elseif cleanCmd == "gkill" or cleanCmd == "gk" then
         toggleGKill()
@@ -2014,23 +2564,26 @@ local function executeCommand(speaker, msg)
         SilentAim.Enabled = not SilentAim.Enabled
         if SilentAim.Enabled then applyGunHandlerHook() else removeGunHandlerHook() end
         status.Text = "Silent Aim: " .. tostring(SilentAim.Enabled)
-    elseif cleanCmd == "reset" or cleanCmd == "forcereset" or cleanCmd == "re" then
-        if param then
-            local resetTarget = findPlayer(param)
+    elseif cleanCmd == "reset" or cleanCmd == "forcereset" or cleanCmd == "fr" then
+        targetQuery = getCommandTargetQuery(args, 2)
+        if targetQuery and targetQuery ~= "" then
+            resetTarget = findPlayer(targetQuery)
             if not resetTarget then
                 status.Text = "Reset: player not found!"
             elseif resetTarget == LocalPlayer then
                 performForceReset()
+            else
+                status.Text = "Reset: name must be THIS alt (" .. LocalPlayer.Name .. ")"
             end
         else
             performForceReset()
         end
     elseif cleanCmd == "loopkill" or cleanCmd == "lk" then
-        local t = findPlayer(param)
-        if t and not isWhitelisted(t) then
+        cmdTarget = findPlayer(param)
+        if cmdTarget and not isWhitelisted(cmdTarget) then
             isStacking = false
             stackTargetName = nil
-            loopkillTargetName = t.Name
+            loopkillTargetName = cmdTarget.Name
             isLoopkill = true
             isStomping = false
             stompTargetName = nil
@@ -2039,17 +2592,24 @@ local function executeCommand(speaker, msg)
             bringPhase = nil
             isManualTarget = true
             isGuardActive = false
-            currentTarget = t
+            currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
             formationMode = "none"
-            if isHiding then
-                beginVoidHideEngage(t)
+            if isHiding or shouldVoidHuntTarget(cmdTarget) then
+                beginVoidHideEngage(cmdTarget)
+            else
+                if not currentWeapon then
+                    currentWeapon = "Revolver"
+                    attackSubMode = "combat"
+                end
+                equipTool(currentWeapon or "Revolver")
             end
-            status.Text = isHiding and ("Status: VOID LOOPKILL → " .. t.Name) or ("Status: LOOPKILLING " .. t.Name)
+            status.Text = shouldVoidHuntTarget(cmdTarget) and ("Status: VOID LOOPKILL ? " .. cmdTarget.Name)
+                or (isHiding and ("Status: VOID LOOPKILL ? " .. cmdTarget.Name) or ("Status: LOOPKILLING " .. cmdTarget.Name))
         end
     elseif cleanCmd == "stack" or cleanCmd == "stk" or cleanCmd == "unstack" then
-        local targetQuery = getCommandTargetQuery(args, 2)
+        targetQuery = getCommandTargetQuery(args, 2)
         if cleanCmd == "unstack" or not targetQuery or targetQuery == "" then
             isStacking = false
             stackTargetName = nil
@@ -2059,9 +2619,9 @@ local function executeCommand(speaker, msg)
                 status.Text = "Stack: OFF"
             end
         else
-            local t = findPlayer(targetQuery)
-            if t and not isWhitelisted(t) then
-                stackTargetName = t.Name
+            cmdTarget = findPlayer(targetQuery)
+            if cmdTarget and not isWhitelisted(cmdTarget) then
+                stackTargetName = cmdTarget.Name
                 isStacking = true
                 isLoopkill = false
                 loopkillTargetName = nil
@@ -2072,7 +2632,7 @@ local function executeCommand(speaker, msg)
                 bringPhase = nil
                 isManualTarget = true
                 isGuardActive = false
-                currentTarget = t
+                currentTarget = cmdTarget
                 isOrbiting = true
                 isFollowing = false
                 isHiding = false
@@ -2083,15 +2643,15 @@ local function executeCommand(speaker, msg)
                     attackSubMode = "combat"
                 end
                 equipTool(currentWeapon or "Revolver")
-                status.Text = "Status: STACK " .. t.Name
+                status.Text = "Status: STACK " .. cmdTarget.Name
             else
                 status.Text = "Stack: player not found!"
             end
         end
     elseif cleanCmd == "stomp" or cleanCmd == "s" then
-        local t = findPlayer(param)
-        if t and not isWhitelisted(t) then
-            stompTargetName = t.Name
+        cmdTarget = findPlayer(param)
+        if cmdTarget and not isWhitelisted(cmdTarget) then
+            stompTargetName = cmdTarget.Name
             isStomping = true
             isGlueFollowActive = true
             isLoopkill = false
@@ -2101,17 +2661,17 @@ local function executeCommand(speaker, msg)
             bringPhase = nil
             isManualTarget = true
             isGuardActive = false
-            currentTarget = t
+            currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
             isHiding = false
             formationMode = "none"
-            status.Text = "Status: STOMPING " .. t.Name
+            status.Text = "Status: STOMPING " .. cmdTarget.Name
         end
     elseif cleanCmd == "bring" or cleanCmd == "br" then
-        local t = findPlayer(param)
-        if t and not isWhitelisted(t) then
-            bringTargetName = t.Name
+        cmdTarget = findPlayer(param)
+        if cmdTarget and not isWhitelisted(cmdTarget) then
+            bringTargetName = cmdTarget.Name
             isBringing = true
             bringPhase = "knock"
             bringPhaseTick = 0
@@ -2122,7 +2682,7 @@ local function executeCommand(speaker, msg)
             loopkillTargetName = nil
             isManualTarget = true
             isGuardActive = false
-            currentTarget = t
+            currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
             isHiding = false
@@ -2132,11 +2692,11 @@ local function executeCommand(speaker, msg)
                 attackSubMode = "combat"
             end
             equipTool(currentWeapon or "Revolver")
-            status.Text = "Status: BRINGING " .. t.Name
+            status.Text = "Status: BRINGING " .. cmdTarget.Name
         end
     elseif cleanCmd == "knock" or cleanCmd == "k" then
-        local t = findPlayer(param)
-        if t and not isWhitelisted(t) then
+        cmdTarget = findPlayer(param)
+        if cmdTarget and not isWhitelisted(cmdTarget) then
             isLoopkill = false
             loopkillTargetName = nil
             isStomping = false
@@ -2146,12 +2706,12 @@ local function executeCommand(speaker, msg)
             bringPhase = nil
             isManualTarget = true
             isGuardActive = false
-            currentTarget = t
+            currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
             formationMode = "none"
-            if isHiding or shouldVoidHuntTarget(t) then
-                beginVoidHideEngage(t)
+            if isHiding or shouldVoidHuntTarget(cmdTarget) then
+                beginVoidHideEngage(cmdTarget)
             else
                 if not currentWeapon then
                     currentWeapon = "Revolver"
@@ -2159,8 +2719,8 @@ local function executeCommand(speaker, msg)
                 end
                 equipTool(currentWeapon or "Revolver")
             end
-            status.Text = shouldVoidHuntTarget(t) and ("Status: VOID HUNT → " .. t.Name)
-                or (isHiding and ("Status: VOID ENGAGE → " .. t.Name) or ("Status: KNOCKING " .. t.Name))
+            status.Text = shouldVoidHuntTarget(cmdTarget) and ("Status: VOID HUNT ? " .. cmdTarget.Name)
+                or (isHiding and ("Status: VOID ENGAGE ? " .. cmdTarget.Name) or ("Status: KNOCKING " .. cmdTarget.Name))
         end
     elseif cleanCmd == "knife" then
         attackSubMode = "knife"
@@ -2210,9 +2770,9 @@ local function executeCommand(speaker, msg)
         isManualTarget = false
         isGuardActive = false
         if LocalPlayer ~= speaker and isWhitelisted(LocalPlayer) then
-            local host = getLeader()
+            host = getLeader()
             if not host or LocalPlayer ~= host then
-                local altIndex = 1
+                altIndex = 1
                 pcall(function()
                     altIndex = select(1, getAltIndex())
                 end)
@@ -2229,7 +2789,7 @@ local function executeCommand(speaker, msg)
         startStand()
     elseif cleanCmd == "pos" or cleanCmd == "position" then
         if param then
-            local pLower = string.lower(param)
+            pLower = string.lower(param)
             if pLower == "above" or pLower == "sky" or pLower == "top" then
                 standPositionMode = "above"
             elseif pLower == "ring" or pLower == "default" or pLower == "side" then
@@ -2249,13 +2809,13 @@ local function executeCommand(speaker, msg)
         status.Text = "Attack position: above"
     elseif cleanCmd == "glue" then
         if param then
-            local pLower = string.lower(param)
+            pLower = string.lower(param)
             if pLower == "on" then
                 toggleGlueFollow(true)
             elseif pLower == "off" then
                 toggleGlueFollow(false)
             else
-                local glueTarget = findPlayer(param)
+                glueTarget = findPlayer(param)
                 if glueTarget == LocalPlayer then
                     toggleGlueFollow()
                 elseif not glueTarget then
@@ -2267,13 +2827,13 @@ local function executeCommand(speaker, msg)
         end
     elseif cleanCmd == "antistomp" or cleanCmd == "as" then
         if param then
-            local pLower = string.lower(param)
+            pLower = string.lower(param)
             if pLower == "on" then
                 toggleAntiStomp(true)
             elseif pLower == "off" then
                 toggleAntiStomp(false)
             else
-                local asTarget = findPlayer(param)
+                asTarget = findPlayer(param)
                 if asTarget == LocalPlayer then
                     toggleAntiStomp()
                 elseif not asTarget then
@@ -2284,7 +2844,7 @@ local function executeCommand(speaker, msg)
             toggleAntiStomp()
         end
     elseif cleanCmd == "say" or cleanCmd == "chat" then
-        local sayText = msg:match("^[%./!]*[sS][aA][yY]%s+(.*)$")
+        sayText = msg:match("^[%./!]*[sS][aA][yY]%s+(.*)$")
             or msg:match("^[%./!]*[cC][hH][aA][tT]%s+(.*)$")
         if not sayText or sayText:gsub("%s", "") == "" then
             status.Text = "Say: usage say hello"
@@ -2296,11 +2856,11 @@ local function executeCommand(speaker, msg)
         if not isWhitelisted(LocalPlayer) then
             return
         end
-        local host = getLeader()
+        host = getLeader()
         if host and LocalPlayer == host then
             return
         end
-        local altIndex = 1
+        altIndex = 1
         pcall(function()
             altIndex = select(1, getAltIndex())
         end)
@@ -2323,7 +2883,7 @@ end
 local lastAutoFireTick = 0
 
 RunService.RenderStepped:Connect(function()
-    if isUnloaded then return end
+    if isUnloaded or resetInProgress then return end
     local char = getChar(LocalPlayer)
     if not char then return end
     local myHrp = char:FindFirstChild("HumanoidRootPart")
@@ -2423,7 +2983,7 @@ RunService.RenderStepped:Connect(function()
                             normalTorso.Position + Vector3.new(0, 3.2, 1)
                         )
                     end
-                    if tick() - bringPhaseTick >= BRING_HOVER_SEC then
+                    if tick() - bringPhaseTick >= C.BRING_HOVER_SEC then
                         fireGrabbing()
                         teleportAltToHost(myHrp)
                         bringPhase = "drop_wait"
@@ -2435,7 +2995,7 @@ RunService.RenderStepped:Connect(function()
                     if not isGlueFollowActive then
                         teleportAltToHost(myHrp)
                     end
-                    if tick() - bringPhaseTick >= BRING_DROP_SEC then
+                    if tick() - bringPhaseTick >= C.BRING_DROP_SEC then
                         fireGrabbing()
                         finishBringFollow()
                     end
@@ -2485,13 +3045,11 @@ RunService.RenderStepped:Connect(function()
                 formationMode = "none"
                 if isHiding and newGuardTarget then
                     beginVoidHideEngage(nearestEnemy)
-                    status.Text = "Status: VOID GUARD → " .. nearestEnemy.Name
+                    status.Text = "Status: VOID GUARD ? " .. nearestEnemy.Name
                     status.TextColor3 = Color3.fromRGB(255, 120, 80)
                 elseif newGuardTarget and shouldVoidHuntTarget(nearestEnemy) then
-                    currentWeapon = "Revolver"
-                    attackSubMode = "combat"
-                    equipTool("Revolver")
-                    status.Text = "Status: VOID HUNT (GK) → " .. nearestEnemy.Name
+                    beginVoidHideEngage(nearestEnemy)
+                    status.Text = "Status: VOID HUNT (GK) ? " .. nearestEnemy.Name
                     status.TextColor3 = Color3.fromRGB(255, 80, 120)
                 end
             elseif isOrbiting and currentTarget and not isManualTarget then
@@ -2590,20 +3148,35 @@ RunService.RenderStepped:Connect(function()
             else
                 isKnifeMode = false
                 local now = tick()
-                if aimPart and now - lastAutoFireTick >= 0.13 then
+                local voidHuntFire = shouldVoidHuntTarget(currentTarget)
+                local fireCd = voidHuntFire and C.VOID_HUNT_FIRE_COOLDOWN or 0.13
+                if aimPart and now - lastAutoFireTick >= fireCd then
                     lastAutoFireTick = now
                     pcall(function() activeTool:Activate() end)
                     local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
                     if mainEvent and activeTool:FindFirstChild("Handle") then
-                        mainEvent:FireServer("UpdateMousePos", aimPart.Position)
+                        local shotPos = aimPart.Position
+                        mainEvent:FireServer("UpdateMousePos", shotPos)
+                        mainEvent:FireServer("UpdateMousePosI", shotPos)
                         mainEvent:FireServer(
                             "ShootGun",
                             activeTool.Handle,
                             activeTool.Handle.CFrame.Position,
-                            aimPart.Position,
+                            shotPos,
                             aimPart,
                             Vector3.new(0, 0, -1)
                         )
+                        if voidHuntFire then
+                            mainEvent:FireServer("UpdateMousePos", shotPos)
+                            mainEvent:FireServer(
+                                "ShootGun",
+                                activeTool.Handle,
+                                activeTool.Handle.CFrame.Position,
+                                shotPos,
+                                aimPart,
+                                (shotPos - activeTool.Handle.CFrame.Position).Unit
+                            )
+                        end
                     end
                     checkAutoReloadOnTool(activeTool)
                 end
@@ -2611,11 +3184,14 @@ RunService.RenderStepped:Connect(function()
         end
 
         local altIndex, totalAlts = getAltIndex()
-        local goalCF = buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
+
         local voidHunt = shouldVoidHuntTarget(currentTarget)
+        local goalCF = voidHunt and buildVoidHuntCFrame(targetChar, altIndex, totalAlts)
+            or buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
 
         if voidHunt then
-            snapVoidHuntCFrame(myHrp, goalCF)
+            applyVoidHideProtection(char)
+            if goalCF then snapVoidHuntCFrame(myHrp, goalCF) end
         elseif not isGlueFollowActive or not glueSpot then
             myHrp.AssemblyLinearVelocity = Vector3.zero
             myHrp.CFrame = goalCF
@@ -2639,17 +3215,18 @@ RunService.RenderStepped:Connect(function()
             local targetRoot = oChar and oChar:FindFirstChild("HumanoidRootPart")
             local targetHum = oChar and oChar:FindFirstChildOfClass("Humanoid")
             if targetRoot and targetHum then
-                local voidHuntMark = currentTarget == otherPlayer and isOrbiting and shouldVoidHuntTarget(otherPlayer)
+                local voidHuntMark = (currentTarget == otherPlayer and isOrbiting and shouldVoidHuntTarget(otherPlayer))
+                    or (isOrbiting and currentTarget == otherPlayer and isVoidHidingPlayer(otherPlayer))
                 if voidHuntMark and targetHum.Health > 0 and not isWhitelisted(otherPlayer) then
-                    targetRoot.Size = Vector3.new(VOID_HUNT_HITBOX, VOID_HUNT_HITBOX, VOID_HUNT_HITBOX)
+                    targetRoot.Size = Vector3.new(C.VOID_HUNT_HITBOX, C.VOID_HUNT_HITBOX, C.VOID_HUNT_HITBOX)
                     targetRoot.Transparency = 0.65
                     targetRoot.CanCollide = false
                 elseif isKnifeMode and targetHum.Health > 0 and not isWhitelisted(otherPlayer) then
-                    targetRoot.Size = Vector3.new(hitboxScaleSize, hitboxScaleSize, hitboxScaleSize)
+                    targetRoot.Size = Vector3.new(C.hitboxScaleSize, C.hitboxScaleSize, C.hitboxScaleSize)
                     targetRoot.Transparency = 0.5
                     targetRoot.CanCollide = false
                 else
-                    targetRoot.Size = defaultHitboxSize
+                    targetRoot.Size = C.defaultHitboxSize
                     targetRoot.Transparency = 1
                 end
             end
@@ -2671,45 +3248,83 @@ end)
 -- CHAT LISTENER
 -- ==========================================
 
-local function handleChat(speaker, message)
-    if isUnloaded or not speaker or not message then return end
-    executeCommand(speaker, message)
-end
+;(function()
+    local lastChatDedupeKey = ""
+    local lastChatDedupeTick = 0
 
-local players = Players:GetPlayers()
-for i = 1, #players do
-    local p = players[i]
-    p.Chatted:Connect(function(msg) handleChat(p, msg) end)
-end
-Players.PlayerAdded:Connect(function(p)
-    p.Chatted:Connect(function(msg) handleChat(p, msg) end)
-end)
+    local function handleChat(speaker, message)
+        if isUnloaded or not speaker or not message then return end
+        local dedupeKey = tostring(speaker.UserId) .. "\31" .. message
+        local now = tick()
+        if dedupeKey == lastChatDedupeKey and (now - lastChatDedupeTick) < 0.75 then
+            return
+        end
+        lastChatDedupeKey = dedupeKey
+        lastChatDedupeTick = now
+        executeCommand(speaker, message)
+    end
 
-pcall(function()
-    for _, channel in ipairs(TextChatService:GetTextChannels()) do
+    local chatPlayers = Players:GetPlayers()
+    for i = 1, #chatPlayers do
+        local p = chatPlayers[i]
+        p.Chatted:Connect(function(msg) handleChat(p, msg) end)
+    end
+    Players.PlayerAdded:Connect(function(p)
+        p.Chatted:Connect(function(msg) handleChat(p, msg) end)
+    end)
+
+    local function hookTextChannel(channel)
+        if not channel or not channel:IsA("TextChannel") then return end
         channel.MessageReceived:Connect(function(txt)
-            if txt.TextSource then
-                local sender = Players:GetPlayerByUserId(txt.TextSource.UserId)
-                if sender then handleChat(sender, txt.Text) end
-            end
+            local text = txt and txt.Text
+            if not text or text == "" then return end
+            local sender = txt.TextSource and resolveChatSender(txt.TextSource)
+            if sender then handleChat(sender, text) end
         end)
     end
-    TextChatService.ChildAdded:Connect(function(child)
-        if child:IsA("TextChannel") then
-            child.MessageReceived:Connect(function(txt)
-                if txt.TextSource then
-                    local sender = Players:GetPlayerByUserId(txt.TextSource.UserId)
-                    if sender then handleChat(sender, txt.Text) end
-                end
+
+    pcall(function()
+        for _, channel in ipairs(TextChatService:GetTextChannels()) do
+            hookTextChannel(channel)
+        end
+        TextChatService.ChildAdded:Connect(function(child)
+            hookTextChannel(child)
+        end)
+    end)
+
+    task.spawn(function()
+        local channels = TextChatService:WaitForChild("TextChannels", 25)
+        if not channels then return end
+        local general = channels:WaitForChild("RBXGeneral", 25)
+        if general then hookTextChannel(general) end
+    end)
+
+    pcall(function()
+        local legacy = ReplicatedStorage:WaitForChild("DefaultChatSystemChatEvents", 10)
+        local onMsg = legacy and legacy:WaitForChild("OnMessageDoneFiltering", 10)
+        if onMsg then
+            onMsg.OnClientEvent:Connect(function(packet)
+                if type(packet) ~= "table" then return end
+                local uid = packet.FromSpeakerUserId or packet.SpeakerUserId or 0
+                local sender = uid > 0 and Players:GetPlayerByUserId(uid) or nil
+                local text = packet.Message or packet.msg
+                if sender and text and text ~= "" then handleChat(sender, text) end
             end)
         end
     end)
-end)
+end)()
 
 task.defer(function()
-    if isUnloaded or not isAntiStompActive then return end
+    if isUnloaded then return end
+    isAntiStompActive = true
     local c = getChar(LocalPlayer)
     if c then task.spawn(armAntiStomp, c) end
 end)
 
 getgenv().StandoUnload = ejectScript
+getgenv().StandoReset = performForceReset
+getgenv().StandoAntiStomp = true
+getgenv().StandoLoaded = true
+pcall(function()
+    warn("[Stando] loaded on " .. LocalPlayer.Name .. " | Anti-stomp ON")
+end)
