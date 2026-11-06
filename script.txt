@@ -603,8 +603,8 @@ local C = {
     VOID_HUNT_HITBOX = 28,
     VOID_HUNT_CLOSE_RADIUS = 2.1,
     VOID_HUNT_FIRE_COOLDOWN = 0.07,
-    VOID_ORBIT_MIN_RADIUS = 28000,
-    VOID_ORBIT_Y_STEP = 4200,
+    VOID_ORBIT_MIN_RADIUS = 12,
+    VOID_ORBIT_Y_STEP = 1.25,
 }
 local voidHideSavedParts = {}
 
@@ -1035,15 +1035,19 @@ end
 
 local function isManualChaseTarget(player)
     if not player or not isManualTarget or currentTarget ~= player then return false end
-    if isLoopkill or isStomping then return true end
+    if isStomping then return false end
+    if isLoopkill then return true end
     if isOrbiting and not isBringing and not isGuardActive then return true end
     return false
 end
 
 local function shouldUseInfiniteChase(player)
     if not player then return false end
-    if isManualChaseTarget(player) then return true end
-    return shouldVoidHuntTarget(player)
+    if shouldVoidHuntTarget(player) then return true end
+    if isManualChaseTarget(player) and getTargetWorldDistance(player) > C.COMBAT_ORBIT_RADIUS * 4 then
+        return true
+    end
+    return false
 end
 
 local function isVoidHuntActive()
@@ -2315,9 +2319,9 @@ local function buildCombatOrbitCFrame(targetPos, altIndex, totalAlts)
     local orbitRadius = (isStacking and C.STACK_ORBIT_RADIUS) or C.COMBAT_ORBIT_RADIUS
     local scale = math.max(math.abs(targetPos.X), math.abs(targetPos.Y), math.abs(targetPos.Z), targetPos.Magnitude, 1)
     if scale >= C.VOID_HUNT_ORIGIN_STUDS then
-        local floatSafe = scale * (2 ^ -20)
-        orbitRadius = math.max(orbitRadius, C.VOID_ORBIT_MIN_RADIUS, floatSafe * 24)
-        orbitRadius = orbitRadius + math.max(0, totalAlts - 1) * math.max(1800, floatSafe * 4)
+        local floatSafe = math.max(C.COMBAT_ORBIT_RADIUS, scale * (2 ^ -20) * 8)
+        orbitRadius = math.max(orbitRadius, C.VOID_ORBIT_MIN_RADIUS, floatSafe)
+        orbitRadius = orbitRadius + (altIndex - 1) * math.max(2.5, floatSafe * 0.15)
     end
     if standPositionMode == "hidden" then
         local hideLift = math.max(5, orbitRadius * 0.02)
@@ -2867,8 +2871,16 @@ local function executeCommand(speaker, msg)
             isFollowing = false
             isHiding = false
             formationMode = "none"
-            beginCombatChase(cmdTarget)
-            status.Text = "Status: CHASE STOMP -> " .. cmdTarget.Name
+            currentWeapon = "Knife"
+            attackSubMode = "knife"
+            if shouldVoidHuntTarget(cmdTarget) then
+                beginCombatChase(cmdTarget)
+            else
+                if releaseGlueFollowLock then releaseGlueFollowLock() end
+                isGlueFollowActive = true
+                if equipTool then pcall(equipTool, "Knife") end
+            end
+            status.Text = "Status: STOMPING " .. cmdTarget.Name
         end
     elseif cleanCmd == "bring" or cleanCmd == "br" then
         cmdTarget = findPlayer(param)
@@ -3110,11 +3122,22 @@ RunService.RenderStepped:Connect(function()
 
             if targetIsKnocked and normalTorso then
                 isOrbiting = false
-                local stompCF = CFrame.new(normalTorso.Position + Vector3.new(0, 3.2, 0), normalTorso.Position + Vector3.new(0, 3.2, 1))
-                if shouldUseInfiniteChase(targetPlayer) then
+                local dead = targetBE and targetBE:FindFirstChild("Dead")
+                if dead and dead.Value == true then
+                    currentTarget = targetPlayer
+                    isOrbiting = true
+                    return
+                end
+                local altIndex, totalAlts = getAltIndex()
+                local stompCF = getGlueStompGoalCFrame(normalTorso, altIndex, totalAlts)
+                if shouldVoidHuntTarget(targetPlayer) then
                     applyVoidHideProtection(char)
+                    glueSpot = nil
+                    clearGluePhysics(myHrp)
                     snapVoidHuntCFrame(myHrp, stompCF)
-                elseif not isGlueFollowActive then
+                elseif isGlueFollowActive then
+                    glueSpot = stompCF
+                else
                     myHrp.AssemblyLinearVelocity = Vector3.zero
                     myHrp.AssemblyAngularVelocity = Vector3.zero
                     myHrp.CFrame = stompCF
@@ -3135,6 +3158,7 @@ RunService.RenderStepped:Connect(function()
             else
                 currentTarget = targetPlayer
                 isOrbiting = true
+                isGlueFollowActive = true
             end
         else
             isStomping = false
