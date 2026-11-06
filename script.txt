@@ -34,12 +34,14 @@ local resetInProgress = false
 local resetSpawnConn = nil
 local lastManualResetTick = 0
 local resetGraceUntil = 0
-local MANUAL_RESET_COOLDOWN = 2.5
-local RESET_GRACE_SEC = 1.25
-local ANTISTOMP_REARM_SEC = 0.35
-local KNOCK_RESET_DEBOUNCE = 0.03
-local KNOCK_RESET_GRACE = 0.3
-local ANTI_STOMP_HP_RESET_AT = 8
+local R = {
+    MANUAL_RESET_COOLDOWN = 2.5,
+    RESET_GRACE_SEC = 1.25,
+    ANTISTOMP_REARM_SEC = 0.35,
+    KNOCK_RESET_DEBOUNCE = 0.03,
+    KNOCK_RESET_GRACE = 0.3,
+    ANTI_STOMP_HP_RESET_AT = 8,
+}
 local finishResetSpawn, rearmAntiStompAfterGrace, armAntiStomp, equipTool, startStand
 
 local WHITELISTED_USERS = {
@@ -248,7 +250,7 @@ do
 end
 
 local isCharacterKnocked, hoodResetAttempt
-do
+;(function()
 local HOOD_RESET_CMDS = { "ResetCharacter", "Respawn", "Reset", "ReloadCharacter" }
 local HOOD_RESET_REMOTE_NAMES = {
     "MainEvent",
@@ -476,7 +478,7 @@ local function hoodResetAttemptImpl(doSnap, hardMode)
 end
 hoodResetAttempt = hoodResetAttemptImpl
 
-end
+end)()
 
 local ownerPlayer = findPlayer(OWNER_NAME)
 local grantedUser = nil
@@ -598,9 +600,11 @@ local C = {
     VOID_HUNT_SEPARATION_STUDS = 500000,
     VOID_HUNT_AIM_STUDS = 50000000000,
     VOID_HUNT_WRITES = 128,
-    VOID_HUNT_HITBOX = 55,
+    VOID_HUNT_HITBOX = 28,
     VOID_HUNT_CLOSE_RADIUS = 2.1,
     VOID_HUNT_FIRE_COOLDOWN = 0.07,
+    VOID_ORBIT_MIN_RADIUS = 28000,
+    VOID_ORBIT_Y_STEP = 4200,
 }
 local voidHideSavedParts = {}
 
@@ -657,7 +661,7 @@ local function disconnectAntiStompListeners()
 end
 
 rearmAntiStompAfterGrace = function(char)
-    task.delay(ANTISTOMP_REARM_SEC, function()
+    task.delay(R.ANTISTOMP_REARM_SEC, function()
         if isUnloaded then return end
         isAntiStompActive = true
         local c = getChar(LocalPlayer) or char
@@ -818,7 +822,6 @@ local isDanceEnabled = false
 local currentDanceIndex = -1
 local currentDanceTrack = nil
 local danceAnimObj = nil
-
 local SyncDances = {
     { Name = "Billy Bounce",  Id = "rbxassetid://136095999219650" },
     { Name = "Zero Two",      Id = "rbxassetid://116714406076290" },
@@ -1045,7 +1048,7 @@ end
 
 local function isVoidHuntActive()
     if resetInProgress then return false end
-    return isOrbiting and currentTarget ~= nil and shouldUseInfiniteChase(currentTarget)
+    return isOrbiting and currentTarget ~= nil and shouldVoidHuntTarget(currentTarget)
 end
 
 local function getSilentAimMaxDistance()
@@ -1280,9 +1283,9 @@ end
 local function performInstantKnockReset()
     if shouldSkipAntiStompKnock() then return end
     local now = tick()
-    if now - lastAntiStompTick < KNOCK_RESET_DEBOUNCE then return end
+    if now - lastAntiStompTick < R.KNOCK_RESET_DEBOUNCE then return end
     lastAntiStompTick = now
-    resetGraceUntil = now + KNOCK_RESET_GRACE
+    resetGraceUntil = now + R.KNOCK_RESET_GRACE
 
     glueSpot = nil
     glueDesync = false
@@ -1412,7 +1415,7 @@ end
 
 local function shouldAntiStompResetForHp(hp)
     if type(hp) ~= "number" then return false end
-    return hp > 0 and hp <= ANTI_STOMP_HP_RESET_AT
+    return hp > 0 and hp <= R.ANTI_STOMP_HP_RESET_AT
 end
 
 local function tryAntiStompLowHpReset(character)
@@ -1511,7 +1514,7 @@ local function setAntiStomp(active)
             end)
         end
     end
-    status.Text = "Anti stomp: " .. (active and "ON" or "OFF") .. " (reset HP<=" .. ANTI_STOMP_HP_RESET_AT .. ")"
+    status.Text = "Anti stomp: " .. (active and "ON" or "OFF") .. " (reset HP<=" .. R.ANTI_STOMP_HP_RESET_AT .. ")"
 end
 
 local function toggleAntiStomp(forceState)
@@ -1644,9 +1647,9 @@ end
 local function performForceReset()
     local now = tick()
     if resetInProgress then return end
-    if now - lastManualResetTick < MANUAL_RESET_COOLDOWN then return end
+    if now - lastManualResetTick < R.MANUAL_RESET_COOLDOWN then return end
     lastManualResetTick = now
-    resetGraceUntil = now + RESET_GRACE_SEC
+    resetGraceUntil = now + R.RESET_GRACE_SEC
     clearCombatStateForReset()
 
     if resetSpawnConn then
@@ -1944,15 +1947,32 @@ local function getFormationRoster()
 end
 
 local function getAltIndex()
-    local _, alts = getFormationRoster()
+    local host = getLeader()
+    local alts = {}
+    local seen = {}
+    local function push(p)
+        if not p or seen[p.UserId] then return end
+        if host and p == host then return end
+        seen[p.UserId] = true
+        alts[#alts + 1] = p
+    end
+    push(LocalPlayer)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if isFormationAlt(p) or isArmyMember(p) or playerHasStandoLoaded(p) then
+            push(p)
+        end
+    end
+    table.sort(alts, function(a, b) return a.UserId < b.UserId end)
     local n = #alts
-    if n < 1 then return 1, 1 end
+    if n < 1 then
+        return (math.abs(LocalPlayer.UserId) % 8) + 1, 8
+    end
     for i = 1, n do
         if alts[i] == LocalPlayer then
             return i, n
         end
     end
-    return 1, n
+    return (math.abs(LocalPlayer.UserId) % n) + 1, n
 end
 
 local function getNearestThreatRangeStuds(myHrp)
@@ -2037,6 +2057,8 @@ task.spawn(function()
     end
 end)
 
+local applyFormationFollow, getGlueGoalCFrame
+;(function()
 local function getHostFlatBasis(leaderHrp)
     local center = leaderHrp.Position
     local look = leaderHrp.CFrame.LookVector
@@ -2253,7 +2275,7 @@ local function getFormationOffset(mode, altIndex, totalAlts)
     return Vector3.new(0, 0, -3)
 end
 
-local function applyFormationFollow(myHrp, leaderHrp, mode, altIndex, totalAlts)
+local function applyFormationFollow_inner(myHrp, leaderHrp, mode, altIndex, totalAlts)
     local goalCFrame
     if mode == "line" then
         local offset = getFormationOffset(mode, altIndex, totalAlts)
@@ -2275,49 +2297,49 @@ local function applyFormationFollow(myHrp, leaderHrp, mode, altIndex, totalAlts)
     myHrp.CFrame = myHrp.CFrame:Lerp(goalCFrame, alpha)
 end
 
-local function getGlueGoalCFrame(leaderHrp, mode, altIndex, totalAlts)
+local function getGlueGoalCFrame_inner(leaderHrp, mode, altIndex, totalAlts)
     if mode == "line" then
         local offset = getFormationOffset(mode, altIndex, totalAlts)
         return CFrame.new(leaderHrp.Position) * leaderHrp.CFrame.Rotation * CFrame.new(offset)
     end
     return getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
 end
+applyFormationFollow = applyFormationFollow_inner
+getGlueGoalCFrame = getGlueGoalCFrame_inner
+end)()
 
 local function buildCombatOrbitCFrame(targetPos, altIndex, totalAlts)
+    if not targetPos then return nil end
     totalAlts = math.max(1, totalAlts)
+    altIndex = math.clamp(altIndex or 1, 1, totalAlts)
     local orbitRadius = (isStacking and C.STACK_ORBIT_RADIUS) or C.COMBAT_ORBIT_RADIUS
+    local scale = math.max(math.abs(targetPos.X), math.abs(targetPos.Y), math.abs(targetPos.Z), targetPos.Magnitude, 1)
+    if scale >= C.VOID_HUNT_ORIGIN_STUDS then
+        local floatSafe = scale * (2 ^ -20)
+        orbitRadius = math.max(orbitRadius, C.VOID_ORBIT_MIN_RADIUS, floatSafe * 24)
+        orbitRadius = orbitRadius + math.max(0, totalAlts - 1) * math.max(1800, floatSafe * 4)
+    end
     if standPositionMode == "hidden" then
-        return CFrame.new(targetPos - Vector3.new(0, 5, 0), targetPos)
+        local hideLift = math.max(5, orbitRadius * 0.02)
+        return CFrame.new(targetPos - Vector3.new(0, hideLift, 0), targetPos)
     end
     local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
-    local attackOffset = Vector3.new(
-        math.cos(spreadAngle) * orbitRadius,
-        0,
-        math.sin(spreadAngle) * orbitRadius
-    )
     local yLift = 0
     if standPositionMode == "above" or standPositionMode == "sky" then
         yLift = C.COMBAT_ORBIT_HEIGHT
     end
-    local goalPos = targetPos + attackOffset + Vector3.new(0, yLift, 0)
-    return CFrame.new(goalPos, targetPos)
-end
-
-local function buildVoidHuntCFrame(theirChar, altIndex, totalAlts)
-    if not theirChar then return nil end
-    local aimPart = getVoidHuntAimPart(theirChar)
-    if not aimPart then return nil end
-    totalAlts = math.max(1, totalAlts or 1)
-    altIndex = math.clamp(altIndex or 1, 1, totalAlts)
-    local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
-    local ring = C.VOID_HUNT_CLOSE_RADIUS + (altIndex - 1) * 0.08
-    local offset = Vector3.new(
-        math.cos(spreadAngle) * ring,
-        1.1 + ((altIndex - 1) % 3) * 0.35,
-        math.sin(spreadAngle) * ring
+    if orbitRadius > C.COMBAT_ORBIT_RADIUS * 2 then
+        yLift = yLift + (altIndex - 1) * C.VOID_ORBIT_Y_STEP
+    else
+        yLift = yLift + (altIndex - 1) * 0.35
+    end
+    local attackOffset = Vector3.new(
+        math.cos(spreadAngle) * orbitRadius,
+        yLift,
+        math.sin(spreadAngle) * orbitRadius
     )
-    local goalPos = aimPart.Position + offset
-    return CFrame.new(goalPos, aimPart.Position)
+    local goalPos = targetPos + attackOffset
+    return CFrame.new(goalPos, targetPos)
 end
 
 local function getGlueCombatGoalCFrame(orbitPart, altIndex, totalAlts)
@@ -2401,7 +2423,8 @@ local function runVoidHuntMaintain()
     if not tChar then return end
     applyVoidHideProtection(char)
     local altIndex, totalAlts = getAltIndex()
-    local goalCF = buildVoidHuntCFrame(tChar, altIndex, totalAlts)
+    local orbitPart = getOrbitPart(tChar)
+    local goalCF = orbitPart and buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
     if goalCF then snapVoidHuntCFrame(hrp, goalCF) end
 end
 
@@ -3379,12 +3402,13 @@ RunService.RenderStepped:Connect(function()
 
         local altIndex, totalAlts = getAltIndex()
 
-        local voidHunt = shouldUseInfiniteChase(currentTarget)
-        local goalCF = voidHunt and buildVoidHuntCFrame(targetChar, altIndex, totalAlts)
-            or buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
+        local goalCF = buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
+        local voidSnap = shouldVoidHuntTarget(currentTarget)
 
-        if voidHunt then
+        if voidSnap then
             applyVoidHideProtection(char)
+            glueSpot = nil
+            clearGluePhysics(myHrp)
             if goalCF then snapVoidHuntCFrame(myHrp, goalCF) end
         elseif not isGlueFollowActive or not glueSpot then
             myHrp.AssemblyLinearVelocity = Vector3.zero
@@ -3524,5 +3548,5 @@ getgenv().StandoReset = performForceReset
 getgenv().StandoAntiStomp = true
 getgenv().StandoLoaded = true
 pcall(function()
-    warn("[Stando] loaded on " .. LocalPlayer.Name .. " | Anti-stomp ON (reset when HP <= " .. ANTI_STOMP_HP_RESET_AT .. ")")
+    warn("[Stando] loaded on " .. LocalPlayer.Name .. " | Anti-stomp ON (reset when HP <= " .. R.ANTI_STOMP_HP_RESET_AT .. ")")
 end)
