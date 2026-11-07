@@ -28,7 +28,23 @@ local StarterGui = game:GetService("StarterGui")
 local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
-local OWNER_NAME = "dudasgoodpuppy21ax97"
+-- First online owner in this list becomes leader; both can always command.
+local OWNER_NAMES = {
+    "dudasgoodpuppy21ax97",
+    "sobfade",
+}
+local function isOwnerPlayer(player)
+    if not player then return false end
+    local nameLower = string.lower(player.Name)
+    local dispLower = string.lower(player.DisplayName)
+    for i = 1, #OWNER_NAMES do
+        local ownerLower = string.lower(OWNER_NAMES[i])
+        if nameLower == ownerLower or dispLower == ownerLower then
+            return true
+        end
+    end
+    return false
+end
 local isUnloaded = false
 local resetInProgress = false
 local resetSpawnConn = nil
@@ -52,6 +68,7 @@ local WHITELISTED_USERS = {
     ["dudasgoodpuppy9ghlhk"] = true,
     ["dudasgoodpuppy21ax97"] = true,
     ["dudasgoodpuppyqz46fy"] = true,
+    ["sobfade"] = true,
     ["TWparaoSub"] = true,
     ["19z"] = true,
     ["muhzmyson"] = true,
@@ -76,6 +93,7 @@ local ARMY_USERS = {
     ["dudasgoodpuppy9ghlhk"] = true,
     ["dudasgoodpuppy21ax97"] = true,
     ["dudasgoodpuppyqz46fy"] = true,
+    ["sobfade"] = true,
     ["19z"] = true,
     ["muhzmyson"] = true,
     ["w_w20491"] = true,
@@ -165,8 +183,7 @@ end
 
 local function removeRuntimeWhitelist(player)
     if not player then return false, "Player not found!" end
-    local ownerLower = string.lower(OWNER_NAME)
-    if string.lower(player.Name) == ownerLower or string.lower(player.DisplayName) == ownerLower then
+    if isOwnerPlayer(player) then
         return false, "WL: cannot remove owner!"
     end
     WHITELISTED_USERS[player.Name] = nil
@@ -181,8 +198,7 @@ end
 
 local function removeRuntimeArmy(player)
     if not player then return false, "Player not found!" end
-    local ownerLower = string.lower(OWNER_NAME)
-    if string.lower(player.Name) == ownerLower or string.lower(player.DisplayName) == ownerLower then
+    if isOwnerPlayer(player) then
         return false, "Army: cannot remove owner!"
     end
     ARMY_USERS[player.Name] = nil
@@ -480,7 +496,7 @@ hoodResetAttempt = hoodResetAttemptImpl
 
 end)()
 
-local ownerPlayer = findPlayer(OWNER_NAME)
+local ownerPlayer = nil
 local grantedUser = nil
 
 local function getLeader()
@@ -490,13 +506,23 @@ local function getLeader()
             return grantedUser
         end
     end
-    if not ownerPlayer then
-        ownerPlayer = findPlayer(OWNER_NAME)
+    -- Prefer listed order: first owner who is in-game with a body.
+    for i = 1, #OWNER_NAMES do
+        local p = findPlayer(OWNER_NAMES[i])
+        if p then
+            local oChar = getChar(p)
+            if oChar and oChar:FindFirstChild("HumanoidRootPart") then
+                ownerPlayer = p
+                return p
+            end
+        end
     end
-    if ownerPlayer then
-        local oChar = getChar(ownerPlayer)
-        if oChar and oChar:FindFirstChild("HumanoidRootPart") then
-            return ownerPlayer
+    -- Fallback: any owner in the server (even if knocked / no HRP yet).
+    for i = 1, #OWNER_NAMES do
+        local p = findPlayer(OWNER_NAMES[i])
+        if p then
+            ownerPlayer = p
+            return p
         end
     end
     return ownerPlayer
@@ -539,6 +565,7 @@ local isBringing = false
 local bringTargetName = nil
 local bringPhase = nil
 local bringPhaseTick = 0
+local bringCombatLockUntil = 0
 local isManualTarget = false
 local isStacking = false
 local stackTargetName = nil
@@ -565,8 +592,9 @@ local lastAntiStompTick = 0
 local lastStompETick = 0
 
 local C = {
-    BRING_HOVER_SEC = 3,
-    BRING_DROP_SEC = 0.8,
+    BRING_HOVER_SEC = 10,
+    BRING_DROP_SEC = 1.1,
+    BRING_GRAB_RETRY = 0.28,
     hitboxScaleSize = 30,
     defaultHitboxSize = Vector3.new(2, 2, 1),
     FORMATION_SPACING = 4,
@@ -2351,13 +2379,33 @@ local function getGlueCombatGoalCFrame(orbitPart, altIndex, totalAlts)
     return buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
 end
 
+local lastBringGrabTick = 0
+
+local function isLocalGrabbing()
+    local c = getChar(LocalPlayer)
+    if c and c:FindFirstChild("GRABBING_CONSTRAINT") then return true end
+    local lc = LocalPlayer.Character
+    if lc and lc:FindFirstChild("GRABBING_CONSTRAINT") then return true end
+    return false
+end
+
 local function fireGrabbing()
-    pcall(function()
-        local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
-        if mainEvent then
-            mainEvent:FireServer("Grabbing")
-        end
-    end)
+    local now = tick()
+    if now - lastBringGrabTick < C.BRING_GRAB_RETRY then return end
+    lastBringGrabTick = now
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if not mainEvent then return end
+    pcall(function() mainEvent:FireServer("PickUp") end)
+    pcall(function() mainEvent:FireServer("Grabbing", false) end)
+    pcall(function() mainEvent:FireServer("Grabbing") end)
+end
+
+local function fireDropGrabbing()
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if not mainEvent then return end
+    pcall(function() mainEvent:FireServer("PickUp") end)
+    pcall(function() mainEvent:FireServer("Grabbing", false) end)
+    pcall(function() mainEvent:FireServer("Carry") end)
 end
 
 local function fireSitEmote()
@@ -2389,14 +2437,40 @@ local function teleportAltToHost(hrp)
 end
 
 local function finishBringFollow()
+    pcall(fireDropGrabbing)
     isBringing = false
     bringTargetName = nil
     bringPhase = nil
     bringPhaseTick = 0
     currentTarget = nil
     isOrbiting = false
+    isManualTarget = false
+    isStomping = false
+    stompTargetName = nil
+    isLoopkill = false
+    loopkillTargetName = nil
+    isStacking = false
+    stackTargetName = nil
+    currentWeapon = nil
+    attackSubMode = "combat"
+    isGlueFollowActive = true
     isFollowing = true
-    status.Text = "Status: FOLLOWING"
+    bringCombatLockUntil = tick() + 3
+    pcall(unequipAll)
+    pcall(setRightClick, false)
+    local myChar = getChar(LocalPlayer)
+    if myChar then
+        pcall(clearVoidHideProtection, myChar)
+        local hrp = myChar:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            glueSpot = nil
+            clearGluePhysics(hrp)
+        end
+    end
+    if status and status.Parent then
+        status.Text = "Status: BRING DONE (weapons off)"
+        status.TextColor3 = Color3.fromRGB(120, 255, 160)
+    end
 end
 
 local function getGlueStompGoalCFrame(torso, altIndex, totalAlts)
@@ -2412,6 +2486,7 @@ end
 local function isGlueMovementActive()
     if isUnloaded or resetInProgress or not isGlueFollowActive or shouldParkInVoid() then return false end
     if isVoidHuntActive() then return false end
+    if isBringing and bringPhase and bringPhase ~= "knock" then return false end
     if isStomping or isBringing then return true end
     return isFollowing or isOrbiting
 end
@@ -2462,7 +2537,7 @@ local function runGlueHeartbeat()
     local altIndex, totalAlts = getAltIndex()
     local gluedStomp = false
 
-    local bodyHoverName = (isStomping and stompTargetName) or (isBringing and bringTargetName and (bringPhase == "hover" or bringPhase == "drop_wait") and bringTargetName)
+    local bodyHoverName = (isStomping and stompTargetName) or (isBringing and bringTargetName and (bringPhase == "hover" or bringPhase == "return" or bringPhase == "drop_wait") and bringTargetName)
     if bodyHoverName then
         local bodyPlayer = findPlayer(bodyHoverName)
         if bodyPlayer and not isWhitelisted(bodyPlayer) then
@@ -2733,7 +2808,7 @@ local function executeCommand(speaker, msg)
         end
     end
 
-    local isOwner = speaker and (string.lower(speaker.Name) == string.lower(OWNER_NAME) or string.lower(speaker.DisplayName) == string.lower(OWNER_NAME))
+    local isOwner = isOwnerPlayer(speaker)
     local isAuthorized = isOwner or (grantedUser and speaker == grantedUser)
     if not isAuthorized then return end
 
@@ -2888,12 +2963,14 @@ local function executeCommand(speaker, msg)
             bringTargetName = cmdTarget.Name
             isBringing = true
             bringPhase = "knock"
-            bringPhaseTick = 0
+            bringPhaseTick = tick()
             isGlueFollowActive = true
             isStomping = false
             stompTargetName = nil
             isLoopkill = false
             loopkillTargetName = nil
+            isStacking = false
+            stackTargetName = nil
             isManualTarget = true
             isGuardActive = false
             currentTarget = cmdTarget
@@ -2901,12 +2978,10 @@ local function executeCommand(speaker, msg)
             isFollowing = false
             isHiding = false
             formationMode = "none"
-            if not currentWeapon then
-                currentWeapon = "Knife"
-                attackSubMode = "knife"
-            end
-            equipTool(currentWeapon or "Knife")
-            status.Text = "Status: BRINGING " .. cmdTarget.Name
+            currentWeapon = "Knife"
+            attackSubMode = "knife"
+            if equipTool then pcall(equipTool, "Knife") end
+            status.Text = "Status: BRING (knock) " .. cmdTarget.Name
         end
     elseif cleanCmd == "knock" or cleanCmd == "k" then
         cmdTarget = findPlayer(param)
@@ -3169,55 +3244,105 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- Bring Mode (knock -> hover -> grab -> host -> drop)
+    -- Bring Mode (knock -> grab -> host -> drop)
     if isBringing and bringTargetName then
         local targetPlayer = findPlayer(bringTargetName)
         if not targetPlayer then
             finishBringFollow()
         else
-            local targetChar = getChar(targetPlayer)
+            local targetChar = getChar(targetPlayer) or targetPlayer.Character
             if not targetChar then return end
             local targetHum = targetChar:FindFirstChildOfClass("Humanoid")
             local targetBE = targetChar:FindFirstChild("BodyEffects")
             local targetIsKnocked = (targetBE and targetBE:FindFirstChild("K.O") and targetBE["K.O"].Value == true)
                 or (targetHum and targetHum.Health <= 0)
-            local normalTorso = targetChar:FindFirstChild("Torso") or targetChar:FindFirstChild("UpperTorso")
-                or targetChar:FindFirstChild("HumanoidRootPart")
+            local normalTorso = targetChar:FindFirstChild("UpperTorso")
+                or targetChar:FindFirstChild("Torso")
+                or getCharRootPart(targetChar)
+            local altIndex, totalAlts = getAltIndex()
+            local isGrabber = (altIndex == 1)
 
             if not targetIsKnocked or not normalTorso then
                 bringPhase = "knock"
                 currentTarget = targetPlayer
                 isOrbiting = true
+                isGlueFollowActive = true
+                if currentWeapon then
+                    equipTool(currentWeapon)
+                else
+                    currentWeapon = "Knife"
+                    attackSubMode = "knife"
+                    equipTool("Knife")
+                end
             else
                 isOrbiting = false
                 if bringPhase == "knock" then
                     bringPhase = "hover"
                     bringPhaseTick = tick()
+                    pcall(unequipAll)
+                    status.Text = "Status: BRING (grab) " .. targetPlayer.Name
                 end
 
                 if bringPhase == "hover" then
-                    if not isGlueFollowActive then
-                        myHrp.AssemblyLinearVelocity = Vector3.zero
-                        myHrp.AssemblyAngularVelocity = Vector3.zero
-                        myHrp.CFrame = CFrame.new(
-                            normalTorso.Position + Vector3.new(0, 3.2, 0),
-                            normalTorso.Position + Vector3.new(0, 3.2, 1)
-                        )
+                    if not isGrabber then
+                        local hostGoal = getHostTeleportCFrame()
+                        if hostGoal then
+                            myHrp.AssemblyLinearVelocity = Vector3.zero
+                            myHrp.CFrame = hostGoal
+                        end
+                        pcall(unequipAll)
+                        if tick() - bringPhaseTick >= 1.0 then
+                            finishBringFollow()
+                        end
+                        return
                     end
-                    if tick() - bringPhaseTick >= C.BRING_HOVER_SEC then
-                        fireGrabbing()
-                        teleportAltToHost(myHrp)
-                        bringPhase = "drop_wait"
+
+                    local hoverCF = getGlueStompGoalCFrame(normalTorso, 1, 1)
+                    glueSpot = nil
+                    clearGluePhysics(myHrp)
+                    myHrp.AssemblyLinearVelocity = Vector3.zero
+                    myHrp.AssemblyAngularVelocity = Vector3.zero
+                    myHrp.CFrame = hoverCF
+
+                    if isLocalGrabbing() then
+                        bringPhase = "return"
                         bringPhaseTick = tick()
                         status.Text = "Status: BRING (to host)"
+                    else
+                        fireGrabbing()
+                        if tick() - bringPhaseTick >= C.BRING_HOVER_SEC then
+                            status.Text = "Status: BRING (grab fail)"
+                            finishBringFollow()
+                        end
+                    end
+                    return
+                elseif bringPhase == "return" then
+                    if not isGrabber then
+                        finishBringFollow()
+                        return
+                    end
+                    glueSpot = nil
+                    clearGluePhysics(myHrp)
+                    pcall(unequipAll)
+                    teleportAltToHost(myHrp)
+                    if tick() - bringPhaseTick >= 0.55 then
+                        bringPhase = "drop_wait"
+                        bringPhaseTick = tick()
+                        status.Text = "Status: BRING (drop)"
                     end
                     return
                 elseif bringPhase == "drop_wait" then
-                    if not isGlueFollowActive then
+                    pcall(unequipAll)
+                    if isGrabber then
                         teleportAltToHost(myHrp)
-                    end
-                    if tick() - bringPhaseTick >= C.BRING_DROP_SEC then
-                        fireGrabbing()
+                        if tick() - bringPhaseTick >= C.BRING_DROP_SEC then
+                            fireDropGrabbing()
+                            task.delay(0.12, function()
+                                pcall(fireDropGrabbing)
+                            end)
+                            finishBringFollow()
+                        end
+                    else
                         finishBringFollow()
                     end
                     return
@@ -3230,7 +3355,7 @@ RunService.RenderStepped:Connect(function()
     local leader = getLeader()
     local leaderHrp = getLeaderHrp()
 
-    if isGuardActive and not isManualTarget and not isLoopkill and not isStacking and not isStomping and not isBringing then
+    if isGuardActive and not isManualTarget and not isLoopkill and not isStacking and not isStomping and not isBringing and tick() >= bringCombatLockUntil then
         if leaderHrp then
             local nearestEnemy = nil
             local voidHider = nil
@@ -3239,8 +3364,7 @@ RunService.RenderStepped:Connect(function()
             local players = Players:GetPlayers()
             for i = 1, #players do
                 local p = players[i]
-                local isOwnerCheck = (ownerPlayer and p == ownerPlayer)
-                if p ~= leader and p ~= LocalPlayer and not isOwnerCheck and not isWhitelisted(p) then
+                if p ~= leader and p ~= LocalPlayer and not isOwnerPlayer(p) and not isWhitelisted(p) then
                     local tHrp, pChar = getPlayerRootPart(p)
                     if not pChar then continue end
                     local tHum = pChar:FindFirstChildOfClass("Humanoid")
@@ -3309,9 +3433,15 @@ RunService.RenderStepped:Connect(function()
     end
 
     -- Combat & Orbiting
-    local isKnifeMode = (attackSubMode == "knife" or attackSubMode == "pitch" or attackSubMode == "sign" or attackSubMode == "whip")
+    local isKnifeMode = false
+    if tick() < bringCombatLockUntil then
+        pcall(unequipAll)
+        isOrbiting = false
+        currentTarget = nil
+        isManualTarget = false
+    end
 
-    if isOrbiting and currentTarget then
+    if isOrbiting and currentTarget and tick() >= bringCombatLockUntil then
         if not isStomping and not isBringing then
             isGlueFollowActive = true
         end
@@ -3381,7 +3511,7 @@ RunService.RenderStepped:Connect(function()
             Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPart.Position)
         end
 
-        if activeTool then
+        if activeTool and not isBringing then
             local tName = string.lower(activeTool.Name)
             if tName:find("knife") or tName:find("pitchfork") or tName:find("stopsign") or tName:find("whip") then
                 isKnifeMode = true
