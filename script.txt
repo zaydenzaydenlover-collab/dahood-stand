@@ -625,11 +625,15 @@ local C = {
     VOID_HUNT_ORIGIN_STUDS = 500000,
     VOID_HUNT_FAR_STUDS = 250000,
     VOID_HUNT_SEPARATION_STUDS = 500000,
+    VOID_HUNT_DEEP_STUDS = 25000000,
     VOID_HUNT_AIM_STUDS = 50000000000,
-    VOID_HUNT_WRITES = 128,
+    VOID_HUNT_WRITES = 160,
+    VOID_HUNT_DEEP_WRITES = 288,
     VOID_HUNT_HITBOX = 28,
+    VOID_HUNT_HITBOX_DEEP = 64,
     VOID_HUNT_CLOSE_RADIUS = 2.1,
-    VOID_HUNT_FIRE_COOLDOWN = 0.07,
+    VOID_HUNT_ATTACH_RADIUS = 1.75,
+    VOID_HUNT_FIRE_COOLDOWN = 0.05,
     VOID_ORBIT_MIN_RADIUS = 12,
     VOID_ORBIT_Y_STEP = 1.25,
 }
@@ -1089,13 +1093,24 @@ local function getSilentAimMaxDistance()
     return SilentAim.MaxDistance
 end
 
-local function snapVoidHuntCFrame(hrp, cf)
+local function snapVoidHuntCFrame(hrp, cf, pin)
     if not hrp or not cf then return end
+    hrp.Anchored = false
     hrp.AssemblyLinearVelocity = Vector3.zero
     hrp.AssemblyAngularVelocity = Vector3.zero
-    for _ = 1, C.VOID_HUNT_WRITES do
+    if pin and pin.Parent and sethiddenproperty then
+        pcall(function() sethiddenproperty(hrp, "PhysicsRepRootPart", pin) end)
+        pcall(function()
+            hrp.CFrame = pin.CFrame:Inverse() * cf
+        end)
+    end
+    local goalPos = cf.Position
+    local scale = math.max(math.abs(goalPos.X), math.abs(goalPos.Y), math.abs(goalPos.Z), goalPos.Magnitude, 1)
+    local writes = scale >= C.VOID_HUNT_DEEP_STUDS and C.VOID_HUNT_DEEP_WRITES or C.VOID_HUNT_WRITES
+    for _ = 1, writes do
         hrp.CFrame = cf
     end
+    pcall(function() hrp:ApplyImpulse(Vector3.new(0, 0.01, 0)) end)
 end
 
 local function getBestSilentTarget()
@@ -1813,6 +1828,7 @@ local function ejectScript()
     end)
     pcall(function() RunService:UnbindFromRenderStep(C.GLUE_RENDER_STEP) end)
     pcall(function() RunService:UnbindFromRenderStep(C.VOID_HUNT_RENDER_STEP) end)
+    pcall(function() RunService:UnbindFromRenderStep(C.VOID_HUNT_RENDER_STEP .. "Last") end)
     pcall(setRightClick, false)
     pcall(stopSyncDance)
     pcall(removeGunHandlerHook)
@@ -2339,31 +2355,59 @@ applyFormationFollow = applyFormationFollow_inner
 getGlueGoalCFrame = getGlueGoalCFrame_inner
 end)()
 
-local function buildCombatOrbitCFrame(targetPos, altIndex, totalAlts)
-    if not targetPos then return nil end
+local function buildCombatOrbitCFrame(targetPosOrPart, altIndex, totalAlts)
+    if not targetPosOrPart then return nil end
     totalAlts = math.max(1, totalAlts)
     altIndex = math.clamp(altIndex or 1, 1, totalAlts)
+    local orbitPart = (typeof(targetPosOrPart) == "Instance") and targetPosOrPart or nil
+    local targetPos = orbitPart and orbitPart.Position or targetPosOrPart
+    if not targetPos then return nil end
+    local baseCF = orbitPart and orbitPart.CFrame or CFrame.new(targetPos)
     local orbitRadius = (isStacking and C.STACK_ORBIT_RADIUS) or C.COMBAT_ORBIT_RADIUS
     local scale = math.max(math.abs(targetPos.X), math.abs(targetPos.Y), math.abs(targetPos.Z), targetPos.Magnitude, 1)
-    if scale >= C.VOID_HUNT_ORIGIN_STUDS then
-        local floatSafe = math.max(C.COMBAT_ORBIT_RADIUS, scale * (2 ^ -20) * 8)
-        orbitRadius = math.max(orbitRadius, C.VOID_ORBIT_MIN_RADIUS, floatSafe)
-        orbitRadius = orbitRadius + (altIndex - 1) * math.max(2.5, floatSafe * 0.15)
+    local deepVoid = scale >= C.VOID_HUNT_DEEP_STUDS
+    local extremeVoid = scale >= C.VOID_HUNT_ORIGIN_STUDS
+    local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
+
+    -- Deep / extreme void: attach in target local space (PhysicsRepRootPart carries the offset).
+    -- Absolute world offsets vanish to float noise past ~tens of millions of studs.
+    if deepVoid or extremeVoid then
+        if standPositionMode == "hidden" then
+            return baseCF * CFrame.new(0, deepVoid and -1.6 or -3.2, 0)
+        end
+        local attachR = deepVoid and C.VOID_HUNT_ATTACH_RADIUS or C.VOID_ORBIT_MIN_RADIUS
+        if isStacking then
+            attachR = math.min(attachR, C.STACK_ORBIT_RADIUS)
+        end
+        local yLift = (altIndex - 1) * (deepVoid and 0.45 or C.VOID_ORBIT_Y_STEP)
+        if standPositionMode == "above" or standPositionMode == "sky" then
+            yLift = yLift + (deepVoid and 2.4 or C.COMBAT_ORBIT_HEIGHT)
+        else
+            yLift = yLift + (deepVoid and 1.15 or 2.5)
+        end
+        if not deepVoid then
+            local floatSafe = math.max(C.COMBAT_ORBIT_RADIUS, scale * (2 ^ -20) * 4)
+            attachR = math.max(attachR, math.min(floatSafe, 80))
+            attachR = attachR + (altIndex - 1) * math.max(1.8, attachR * 0.08)
+        else
+            attachR = attachR + (altIndex - 1) * 0.55
+        end
+        return baseCF * CFrame.new(
+            math.cos(spreadAngle) * attachR,
+            yLift,
+            math.sin(spreadAngle) * attachR
+        )
     end
+
     if standPositionMode == "hidden" then
         local hideLift = math.max(5, orbitRadius * 0.02)
         return CFrame.new(targetPos - Vector3.new(0, hideLift, 0), targetPos)
     end
-    local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
     local yLift = 0
     if standPositionMode == "above" or standPositionMode == "sky" then
         yLift = C.COMBAT_ORBIT_HEIGHT
     end
-    if orbitRadius > C.COMBAT_ORBIT_RADIUS * 2 then
-        yLift = yLift + (altIndex - 1) * C.VOID_ORBIT_Y_STEP
-    else
-        yLift = yLift + (altIndex - 1) * 0.35
-    end
+    yLift = yLift + (altIndex - 1) * 0.35
     local attackOffset = Vector3.new(
         math.cos(spreadAngle) * orbitRadius,
         yLift,
@@ -2375,7 +2419,7 @@ end
 
 local function getGlueCombatGoalCFrame(orbitPart, altIndex, totalAlts)
     if not orbitPart then return nil end
-    return buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
+    return buildCombatOrbitCFrame(orbitPart, altIndex, totalAlts)
 end
 
 local lastBringGrabTick = 0
@@ -2477,7 +2521,14 @@ local function getGlueStompGoalCFrame(torso, altIndex, totalAlts)
     altIndex = math.clamp(altIndex, 1, totalAlts)
     local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
     local ring = 1.15
-    local base = torso.Position + Vector3.new(0, 3.2, 0)
+    local tPos = torso.Position
+    local scale = math.max(math.abs(tPos.X), math.abs(tPos.Y), math.abs(tPos.Z), tPos.Magnitude, 1)
+    if scale >= C.VOID_HUNT_ORIGIN_STUDS then
+        local y = scale >= C.VOID_HUNT_DEEP_STUDS and 2.4 or 3.2
+        local r = scale >= C.VOID_HUNT_DEEP_STUDS and 0.9 or ring
+        return torso.CFrame * CFrame.new(math.cos(spreadAngle) * r, y, math.sin(spreadAngle) * r)
+    end
+    local base = tPos + Vector3.new(0, 3.2, 0)
     local pos = base + Vector3.new(math.cos(spreadAngle) * ring, 0, math.sin(spreadAngle) * ring)
     return CFrame.new(pos, base)
 end
@@ -2496,14 +2547,16 @@ local function runVoidHuntMaintain()
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     if not hrp then return end
     glueSpot = nil
-    clearGluePhysics(hrp)
     local tChar = getChar(currentTarget) or currentTarget.Character
     if not tChar then return end
     applyVoidHideProtection(char)
     local altIndex, totalAlts = getAltIndex()
     local orbitPart = getOrbitPart(tChar)
-    local goalCF = orbitPart and buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
-    if goalCF then snapVoidHuntCFrame(hrp, goalCF) end
+    if not orbitPart then return end
+    local torso = tChar:FindFirstChild("UpperTorso") or tChar:FindFirstChild("Torso")
+    local pin = (torso and (torso.AssemblyRootPart or torso)) or orbitPart.AssemblyRootPart or orbitPart
+    local goalCF = buildCombatOrbitCFrame(orbitPart, altIndex, totalAlts)
+    if goalCF then snapVoidHuntCFrame(hrp, goalCF, pin) end
 end
 
 local function releaseGlueFollowLock()
@@ -2641,7 +2694,12 @@ pcall(function()
 end)
 
 pcall(function()
-    RunService:BindToRenderStep(C.VOID_HUNT_RENDER_STEP, Enum.RenderPriority.Last.Value, function()
+    RunService:BindToRenderStep(C.VOID_HUNT_RENDER_STEP, Enum.RenderPriority.Camera.Value, function()
+        pcall(runVoidHuntMaintain)
+    end)
+end)
+pcall(function()
+    RunService:BindToRenderStep(C.VOID_HUNT_RENDER_STEP .. "Last", Enum.RenderPriority.Last.Value, function()
         pcall(runVoidHuntMaintain)
     end)
 end)
@@ -3207,8 +3265,8 @@ RunService.RenderStepped:Connect(function()
                 if shouldVoidHuntTarget(targetPlayer) then
                     applyVoidHideProtection(char)
                     glueSpot = nil
-                    clearGluePhysics(myHrp)
-                    snapVoidHuntCFrame(myHrp, stompCF)
+                    local pin = normalTorso.AssemblyRootPart or normalTorso
+                    snapVoidHuntCFrame(myHrp, stompCF, pin)
                 elseif isGlueFollowActive then
                     glueSpot = stompCF
                 else
@@ -3515,6 +3573,9 @@ RunService.RenderStepped:Connect(function()
             if tName:find("knife") or tName:find("pitchfork") or tName:find("stopsign") or tName:find("whip") then
                 isKnifeMode = true
                 pcall(function() activeTool:Activate() end)
+                if voidHuntCombat then
+                    pcall(function() activeTool:Activate() end)
+                end
             else
                 isKnifeMode = false
                 local now = tick()
@@ -3526,25 +3587,32 @@ RunService.RenderStepped:Connect(function()
                     local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
                     if mainEvent and activeTool:FindFirstChild("Handle") then
                         local shotPos = aimPart.Position
+                        local handlePos = activeTool.Handle.CFrame.Position
                         mainEvent:FireServer("UpdateMousePos", shotPos)
                         mainEvent:FireServer("UpdateMousePosI", shotPos)
                         mainEvent:FireServer(
                             "ShootGun",
                             activeTool.Handle,
-                            activeTool.Handle.CFrame.Position,
+                            handlePos,
                             shotPos,
                             aimPart,
                             Vector3.new(0, 0, -1)
                         )
                         if voidHuntFire then
+                            local shotDir = shotPos - handlePos
+                            if shotDir.Magnitude > 1e-3 then
+                                shotDir = shotDir.Unit
+                            else
+                                shotDir = Vector3.new(0, 0, -1)
+                            end
                             mainEvent:FireServer("UpdateMousePos", shotPos)
                             mainEvent:FireServer(
                                 "ShootGun",
                                 activeTool.Handle,
-                                activeTool.Handle.CFrame.Position,
+                                handlePos,
                                 shotPos,
                                 aimPart,
-                                (shotPos - activeTool.Handle.CFrame.Position).Unit
+                                shotDir
                             )
                         end
                     end
@@ -3555,14 +3623,17 @@ RunService.RenderStepped:Connect(function()
 
         local altIndex, totalAlts = getAltIndex()
 
-        local goalCF = buildCombatOrbitCFrame(orbitPart.Position, altIndex, totalAlts)
+        local goalCF = buildCombatOrbitCFrame(orbitPart, altIndex, totalAlts)
         local voidSnap = shouldVoidHuntTarget(currentTarget)
 
         if voidSnap then
             applyVoidHideProtection(char)
             glueSpot = nil
-            clearGluePhysics(myHrp)
-            if goalCF then snapVoidHuntCFrame(myHrp, goalCF) end
+            local pinTorso = targetChar:FindFirstChild("UpperTorso") or targetChar:FindFirstChild("Torso")
+            local pin = (pinTorso and (pinTorso.AssemblyRootPart or pinTorso))
+                or (targetHrp and (targetHrp.AssemblyRootPart or targetHrp))
+                or orbitPart
+            if goalCF then snapVoidHuntCFrame(myHrp, goalCF, pin) end
         elseif not isGlueFollowActive or not glueSpot then
             myHrp.AssemblyLinearVelocity = Vector3.zero
             myHrp.CFrame = goalCF
@@ -3589,7 +3660,10 @@ RunService.RenderStepped:Connect(function()
                 local voidHuntMark = (currentTarget == otherPlayer and isOrbiting and shouldUseInfiniteChase(otherPlayer))
                     or (isOrbiting and currentTarget == otherPlayer and isVoidHidingPlayer(otherPlayer))
                 if voidHuntMark and targetHum.Health > 0 and not isWhitelisted(otherPlayer) then
-                    targetRoot.Size = Vector3.new(C.VOID_HUNT_HITBOX, C.VOID_HUNT_HITBOX, C.VOID_HUNT_HITBOX)
+                    local rootPos = targetRoot.Position
+                    local voidScale = math.max(math.abs(rootPos.X), math.abs(rootPos.Y), math.abs(rootPos.Z), rootPos.Magnitude, 1)
+                    local hb = voidScale >= C.VOID_HUNT_DEEP_STUDS and C.VOID_HUNT_HITBOX_DEEP or C.VOID_HUNT_HITBOX
+                    targetRoot.Size = Vector3.new(hb, hb, hb)
                     targetRoot.Transparency = 0.65
                     targetRoot.CanCollide = false
                 elseif isKnifeMode and targetHum.Health > 0 and not isWhitelisted(otherPlayer) then
