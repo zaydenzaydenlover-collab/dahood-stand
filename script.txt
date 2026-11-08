@@ -30,7 +30,6 @@ local LocalPlayer = Players.LocalPlayer
 
 -- First online owner in this list becomes leader; both can always command.
 local OWNER_NAMES = {
-    "dudasgoodpuppy21ax97",
     "sobfade",
 }
 local function isOwnerPlayer(player)
