@@ -627,14 +627,14 @@ local C = {
     VOID_HUNT_SEPARATION_STUDS = 500000,
     VOID_HUNT_DEEP_STUDS = 8000000,
     VOID_HUNT_AIM_STUDS = 50000000000,
-    VOID_HUNT_WRITES = 160,
-    VOID_HUNT_DEEP_WRITES = 320,
+    VOID_HUNT_WRITES = 72,
+    VOID_HUNT_DEEP_WRITES = 140,
     VOID_HUNT_HITBOX = 36,
     VOID_HUNT_HITBOX_DEEP = 96,
     VOID_HUNT_CLOSE_RADIUS = 2.1,
     VOID_HUNT_ATTACH_RADIUS = 0.35,
     VOID_HUNT_KNIFE_HITBOX = 22,
-    VOID_HUNT_FIRE_COOLDOWN = 0.04,
+    VOID_HUNT_FIRE_COOLDOWN = 0.02,
     VOID_ORBIT_MIN_RADIUS = 12,
     VOID_ORBIT_Y_STEP = 1.25,
 }
@@ -3308,7 +3308,7 @@ RunService.RenderStepped:Connect(function()
                     myHrp.CFrame = stompCF
                 end
                 local now = tick()
-                if now - lastStompETick >= 0.35 then
+                if now - lastStompETick >= 0.18 then
                     lastStompETick = now
                     pcall(function()
                         local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
@@ -3634,12 +3634,13 @@ RunService.RenderStepped:Connect(function()
                 pcall(function() activeTool:Activate() end)
                 if voidHuntCombat then
                     pcall(function() activeTool:Activate() end)
+                    pcall(function() activeTool:Activate() end)
                 end
             else
                 isKnifeMode = false
                 local now = tick()
                 local voidHuntFire = voidHuntCombat
-                local fireCd = voidHuntFire and C.VOID_HUNT_FIRE_COOLDOWN or 0.13
+                local fireCd = voidHuntFire and C.VOID_HUNT_FIRE_COOLDOWN or 0.08
                 if aimPart and now - lastAutoFireTick >= fireCd then
                     lastAutoFireTick = now
                     pcall(function() activeTool:Activate() end)
