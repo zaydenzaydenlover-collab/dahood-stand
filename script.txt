@@ -2299,16 +2299,26 @@ local function getWedgeWorldPosition(leaderHrp, altIndex, totalAlts)
     return center - flatLook * step
 end
 
--- side: -1 = left of host, +1 = right. Stand next to host, spaced outward.
+-- side: -1 = left, +1 = right. Stand next to host, spaced outward.
 local function getFlankWorldPosition(leaderHrp, altIndex, totalAlts, side)
     local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
     local spacing = C.FORMATION_SPACING
     local sideDist = C.FORMATION_FLANK_DIST
     totalAlts = math.max(1, totalAlts)
     altIndex = math.clamp(altIndex, 1, totalAlts)
-    -- alt 1 closest beside you, then further left/right
     local out = sideDist + (altIndex - 1) * spacing
     return center + flatRight * (side * out)
+end
+
+-- depth: +1 = front, -1 = back. Stand in front/behind host, spaced outward.
+local function getDepthWorldPosition(leaderHrp, altIndex, totalAlts, depth)
+    local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
+    local spacing = C.FORMATION_SPACING
+    local sideDist = C.FORMATION_FLANK_DIST
+    totalAlts = math.max(1, totalAlts)
+    altIndex = math.clamp(altIndex, 1, totalAlts)
+    local out = sideDist + (altIndex - 1) * spacing
+    return center + flatLook * (depth * out)
 end
 
 -- Split alts onto both sides next to you (1 left, 2 right, 3 further left, ...).
@@ -2345,6 +2355,12 @@ local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
     end
     if mode == "right" or mode == "r" then
         return formationCFrameFaceForward(leaderHrp, getFlankWorldPosition(leaderHrp, altIndex, totalAlts, 1))
+    end
+    if mode == "front" or mode == "f" or mode == "forward" then
+        return formationCFrameFaceForward(leaderHrp, getDepthWorldPosition(leaderHrp, altIndex, totalAlts, 1))
+    end
+    if mode == "back" or mode == "behind" or mode == "rear" then
+        return formationCFrameFaceForward(leaderHrp, getDepthWorldPosition(leaderHrp, altIndex, totalAlts, -1))
     end
     if mode == "sides" or mode == "lr" or mode == "leftright" then
         return formationCFrameFaceForward(leaderHrp, getSidesWorldPosition(leaderHrp, altIndex, totalAlts))
@@ -3218,6 +3234,16 @@ local function executeCommand(speaker, msg)
         isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
         isGlueFollowActive = true
         status.Text = "Formation: Sides (L/R)"
+    elseif cleanCmd == "front" or cleanCmd == "forward" then
+        formationMode = "front"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        isGlueFollowActive = true
+        status.Text = "Formation: Front"
+    elseif cleanCmd == "back" or cleanCmd == "behind" or cleanCmd == "rear" then
+        formationMode = "back"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        isGlueFollowActive = true
+        status.Text = "Formation: Back"
     elseif cleanCmd == "shield" then
         formationMode = "shield"
         isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
