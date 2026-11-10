@@ -597,6 +597,7 @@ local C = {
     FORMATION_TRI_SIDE = 8,
     FORMATION_WEDGE_STEP = 3.5,
     FORMATION_WEDGE_SPREAD = 0.92,
+    FORMATION_FLANK_DIST = 3.4,
     COMBAT_ORBIT_RADIUS = 5.4,
     COMBAT_ORBIT_HEIGHT = 14,
     STACK_ORBIT_RADIUS = 2.85,
@@ -2298,6 +2299,27 @@ local function getWedgeWorldPosition(leaderHrp, altIndex, totalAlts)
     return center - flatLook * step
 end
 
+-- side: -1 = left of host, +1 = right. Stand next to host, spaced outward.
+local function getFlankWorldPosition(leaderHrp, altIndex, totalAlts, side)
+    local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
+    local spacing = C.FORMATION_SPACING
+    local sideDist = C.FORMATION_FLANK_DIST
+    totalAlts = math.max(1, totalAlts)
+    altIndex = math.clamp(altIndex, 1, totalAlts)
+    -- alt 1 closest beside you, then further left/right
+    local out = sideDist + (altIndex - 1) * spacing
+    return center + flatRight * (side * out)
+end
+
+-- Split alts onto both sides next to you (1 left, 2 right, 3 further left, ...).
+local function getSidesWorldPosition(leaderHrp, altIndex, totalAlts)
+    local onRight = (altIndex % 2 == 0)
+    local side = onRight and 1 or -1
+    local sideIndex = math.ceil(altIndex / 2)
+    local sideCount = onRight and math.floor(totalAlts / 2) or math.ceil(totalAlts / 2)
+    return getFlankWorldPosition(leaderHrp, sideIndex, math.max(1, sideCount), side)
+end
+
 local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
     totalAlts = math.max(1, totalAlts)
     altIndex = math.clamp(altIndex, 1, totalAlts)
@@ -2316,6 +2338,16 @@ local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
     if mode == "wedge" or mode == "v" then
         local goalPos = getWedgeWorldPosition(leaderHrp, altIndex, totalAlts)
         return formationCFrameFaceForward(leaderHrp, goalPos)
+    end
+
+    if mode == "left" or mode == "l" then
+        return formationCFrameFaceForward(leaderHrp, getFlankWorldPosition(leaderHrp, altIndex, totalAlts, -1))
+    end
+    if mode == "right" or mode == "r" then
+        return formationCFrameFaceForward(leaderHrp, getFlankWorldPosition(leaderHrp, altIndex, totalAlts, 1))
+    end
+    if mode == "sides" or mode == "lr" or mode == "leftright" then
+        return formationCFrameFaceForward(leaderHrp, getSidesWorldPosition(leaderHrp, altIndex, totalAlts))
     end
 
     local radius = math.clamp(C.FORMATION_RING_RADIUS + (totalAlts - 1) * 0.15, 4.5, 7)
@@ -3171,6 +3203,21 @@ local function executeCommand(speaker, msg)
         formationMode = "line"
         isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
         status.Text = "Formation: Line"
+    elseif cleanCmd == "left" or cleanCmd == "l" then
+        formationMode = "left"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        isGlueFollowActive = true
+        status.Text = "Formation: Left"
+    elseif cleanCmd == "right" or cleanCmd == "r" then
+        formationMode = "right"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        isGlueFollowActive = true
+        status.Text = "Formation: Right"
+    elseif cleanCmd == "sides" or cleanCmd == "lr" or cleanCmd == "leftright" then
+        formationMode = "sides"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        isGlueFollowActive = true
+        status.Text = "Formation: Sides (L/R)"
     elseif cleanCmd == "shield" then
         formationMode = "shield"
         isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
