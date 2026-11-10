@@ -85,28 +85,12 @@ local WHITELISTED_USERS = {
 }
 
 local ARMY_USERS = {
-    ["idan1235838"] = true,
-    ["orionAur55"] = true,
-    ["filmon1335"] = true,
-    ["Nazrawi12121"] = true,
-    ["dudasgoodpuppy9ghlhk"] = true,
-    ["dudasgoodpuppy21ax97"] = true,
-    ["dudasgoodpuppyqz46fy"] = true,
-    ["sobfade"] = true,
-    ["19z"] = true,
-    ["muhzmyson"] = true,
-    ["w_w20491"] = true,
-    ["MUHZMYSON"] = true,
-    ["b_tjv"] = true,
-    ["WockyFrm"] = true,
-    ["AHAAHHAHAHA2"] = true,
-    ["R0zxxx"] = true,
-    ["DIGASGAMES1"] = true,
-    ["lucythebest4life"] = true,
-    ["wveaklur"] = true,
-    ["dandysworldlegend9"] = true,
-    ["MattyBRapsFan20177"] = true,
     ["PakistaniMobBoss"] = true,
+    ["MattyBRapsFan20177"] = true,
+    ["dandysworldlegend9"] = true,
+    ["filmon1335"] = true,
+    ["orionAur55"] = true,
+    ["idan1235838"] = true,
 }
 
 local STANDO_PRESENCE_FOLDER = "StandoArmyPresence"
@@ -583,6 +567,13 @@ local function clearGluePhysics(root)
     glueSpot = nil
 end
 
+local function clearInvertGlue()
+    if invertGluedRoot and sethiddenproperty then
+        pcall(function() sethiddenproperty(invertGluedRoot, "PhysicsRepRootPart", nil) end)
+    end
+    invertGluedRoot = nil
+end
+
 local isAntiStompActive = true
 local antiStompKoConn = nil
 local antiStompDiedConn = nil
@@ -637,8 +628,12 @@ local C = {
     VOID_HUNT_FIRE_COOLDOWN = 0.02,
     VOID_ORBIT_MIN_RADIUS = 12,
     VOID_ORBIT_Y_STEP = 1.25,
+    -- Invert glue: pull TARGET onto YOU (alts stay put). Friend method.
+    INVERT_GLUE_WRITES = 64,
+    INVERT_GLUE_RENDER_STEP = "StandoInvertGlue",
 }
 local voidHideSavedParts = {}
+local invertGluedRoot = nil
 
 local function clearVoidHideProtection(char)
     if not char then
@@ -1085,6 +1080,23 @@ end
 local function isVoidHuntActive()
     if resetInProgress then return false end
     return isOrbiting and currentTarget ~= nil and shouldVoidHuntTarget(currentTarget)
+end
+
+local function getInvertPullLocalCF(altIndex, totalAlts)
+    totalAlts = math.max(1, totalAlts or 1)
+    altIndex = math.clamp(altIndex or 1, 1, totalAlts)
+    local slot = ((altIndex - 1) % 3) + 1
+    if slot == 1 then
+        return CFrame.new(0, 1.05, -1.25)
+    elseif slot == 2 then
+        return CFrame.new(0, 2.75, 0.15)
+    end
+    return CFrame.new(0, -0.9, 0.35)
+end
+
+-- Invert glue kept OFF — friend's pull-target method did not work in testing.
+local function shouldInvertGlueCombat()
+    return false
 end
 
 local function getSilentAimMaxDistance()
@@ -1659,6 +1671,7 @@ end
 
 local function fullStopAndReturn()
     setRightClick(false)
+    pcall(clearInvertGlue)
     pcall(function() clearVoidHideProtection(getChar(LocalPlayer)) end)
     isOrbiting = false
     isHiding = false
@@ -1850,12 +1863,14 @@ local function ejectScript()
     end
     pcall(fullStopAndReturn)
     isGlueFollowActive = false
+    pcall(clearInvertGlue)
     pcall(function()
         clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
     end)
     pcall(function() RunService:UnbindFromRenderStep(C.GLUE_RENDER_STEP) end)
     pcall(function() RunService:UnbindFromRenderStep(C.VOID_HUNT_RENDER_STEP) end)
     pcall(function() RunService:UnbindFromRenderStep(C.VOID_HUNT_RENDER_STEP .. "Last") end)
+    pcall(function() RunService:UnbindFromRenderStep(C.INVERT_GLUE_RENDER_STEP) end)
     pcall(setRightClick, false)
     pcall(stopSyncDance)
     pcall(removeGunHandlerHook)
@@ -2572,6 +2587,10 @@ local function isGlueMovementActive()
     return isFollowing or isOrbiting
 end
 
+local function runInvertGluePull()
+    clearInvertGlue()
+end
+
 local function runVoidHuntMaintain()
     if not isVoidHuntActive() then return end
     local char = getChar(LocalPlayer)
@@ -2580,7 +2599,6 @@ local function runVoidHuntMaintain()
     glueSpot = nil
     local tChar = getChar(currentTarget) or currentTarget.Character
     if not tChar then return end
-    -- Do NOT shrink our parts while hunting — knife HITBOX_PART needs real size.
     clearVoidHideProtection(char)
     local altIndex, totalAlts = getAltIndex()
     local orbitPart = getOrbitPart(tChar)
@@ -2594,6 +2612,7 @@ end
 local function releaseGlueFollowLock()
     glueSpot = nil
     glueDesync = false
+    clearInvertGlue()
     local hrp = getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart")
     clearGluePhysics(hrp)
 end
@@ -2733,6 +2752,11 @@ end)
 pcall(function()
     RunService:BindToRenderStep(C.VOID_HUNT_RENDER_STEP .. "Last", Enum.RenderPriority.Last.Value, function()
         pcall(runVoidHuntMaintain)
+    end)
+end)
+pcall(function()
+    RunService:BindToRenderStep(C.INVERT_GLUE_RENDER_STEP, Enum.RenderPriority.First.Value, function()
+        pcall(runInvertGluePull)
     end)
 end)
 
