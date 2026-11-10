@@ -2506,6 +2506,21 @@ local function fireSitEmote()
     end)
 end
 
+local function fireMuscleSize(amount)
+    amount = tonumber(amount)
+    if amount == nil then return false, nil end
+    amount = math.clamp(math.floor(amount + 0.5), 0, 30000)
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if mainEvent then
+        pcall(function() mainEvent:FireServer("ChangeMuscleInformation", amount) end)
+    end
+    local unreliableMain = ReplicatedStorage:FindFirstChild("UnreliableMainEvent")
+    if unreliableMain then
+        pcall(function() unreliableMain:FireServer("ChangeMuscleInformation", amount) end)
+    end
+    return true, amount
+end
+
 local function getHostTeleportCFrame()
     local leaderHrp = getLeaderHrp()
     if not leaderHrp then return nil end
@@ -3120,6 +3135,17 @@ local function executeCommand(speaker, msg)
         currentWeapon = "Knife"
         equipTool("Knife")
         status.Text = "Weapon: Knife"
+    elseif cleanCmd == "size" or cleanCmd == "muscle" or cleanCmd == "musclesize" then
+        if not param or param == "" then
+            status.Text = "Size: .size 0-30000"
+        else
+            cmdOk, cmdMsg = fireMuscleSize(param)
+            if cmdOk then
+                status.Text = "Size: " .. tostring(cmdMsg)
+            else
+                status.Text = "Size: need number 0-30000"
+            end
+        end
     elseif cleanCmd == "revolver" or cleanCmd == "gun" then
         attackSubMode = "combat"
         currentWeapon = "Revolver"
