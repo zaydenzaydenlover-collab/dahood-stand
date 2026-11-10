@@ -2644,6 +2644,119 @@ local function fireMuscleSize(amount)
     return true, amount
 end
 
+local function extractFFAServerGuid(entry)
+    if type(entry) == "string" and entry ~= "" then
+        return entry
+    end
+    if type(entry) ~= "table" then
+        return nil
+    end
+    local keys = {
+        "Id", "id", "ID", "JobId", "jobId", "jobid",
+        "GUID", "Guid", "guid", "UUID", "Uuid", "uuid",
+        "ServerId", "serverId", "InstanceId", "instanceId", "key",
+    }
+    for i = 1, #keys do
+        local v = entry[keys[i]]
+        if type(v) == "string" and v ~= "" then
+            return v
+        end
+    end
+    if type(entry.key) == "string" and entry.key ~= "" then
+        return entry.key
+    end
+    if type(entry.value) == "string" and entry.value ~= "" then
+        return entry.value
+    end
+    if type(entry.value) == "table" then
+        return extractFFAServerGuid(entry.value)
+    end
+    return nil
+end
+
+local function normalizeFFAServerList(raw)
+    local out = {}
+    if type(raw) ~= "table" then
+        return out
+    end
+    local maxIndex = 0
+    for k, _ in pairs(raw) do
+        if type(k) == "number" and k > maxIndex then
+            maxIndex = k
+        end
+    end
+    if maxIndex > 0 then
+        for i = 1, maxIndex do
+            if raw[i] ~= nil then
+                out[#out + 1] = raw[i]
+            end
+        end
+    else
+        for k, v in pairs(raw) do
+            if type(k) == "string" then
+                if type(v) == "table" then
+                    if extractFFAServerGuid(v) then
+                        out[#out + 1] = v
+                    else
+                        out[#out + 1] = { Id = k, Data = v }
+                    end
+                elseif type(v) == "string" then
+                    out[#out + 1] = k
+                end
+            end
+        end
+    end
+    table.sort(out, function(a, b)
+        local function orderOf(entry)
+            if type(entry) ~= "table" then return nil end
+            return tonumber(entry.Number or entry.number or entry.Index or entry.index or entry.Order or entry.order or entry.ServerNumber)
+        end
+        local na, nb = orderOf(a), orderOf(b)
+        if na and nb then return na < nb end
+        if na then return true end
+        if nb then return false end
+        return false
+    end)
+    return out
+end
+
+local function joinFFAServerByNumber(serverNumber)
+    serverNumber = tonumber(serverNumber)
+    if not serverNumber or serverNumber < 1 then
+        return false, "use .server 1"
+    end
+    serverNumber = math.floor(serverNumber)
+    local mainFn = ReplicatedStorage:FindFirstChild("MainFunction")
+    local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    if not mainFn or not mainEvent then
+        return false, "FFA remotes missing"
+    end
+    local ok, raw = pcall(function()
+        return mainFn:InvokeServer("GetFFAServerList")
+    end)
+    if not ok then
+        return false, "GetFFAServerList failed"
+    end
+    local list = normalizeFFAServerList(raw)
+    if #list < 1 then
+        return false, "no FFA servers"
+    end
+    if serverNumber > #list then
+        return false, "only " .. tostring(#list) .. " servers"
+    end
+    local guid = extractFFAServerGuid(list[serverNumber])
+    if not guid then
+        return false, "server #" .. tostring(serverNumber) .. " has no id"
+    end
+    pcall(function()
+        mainFn:InvokeServer("GetServerQueueInformation", guid, "FFA")
+    end)
+    pcall(function()
+        mainEvent:FireServer("JOIN_FFA_SERVER", guid)
+    end)
+    return true, "Joining FFA #" .. tostring(serverNumber)
+end
+
 local function getHostTeleportCFrame()
     local leaderHrp = getLeaderHrp()
     if not leaderHrp then return nil end
@@ -3268,6 +3381,24 @@ local function executeCommand(speaker, msg)
             else
                 status.Text = "Size: need number 0-30000"
             end
+        end
+    elseif cleanCmd == "server" or cleanCmd == "ffa" or cleanCmd == "joinserver" or cleanCmd == "ffaserver" then
+        if not param or param == "" then
+            status.Text = "FFA: .server 1"
+        else
+            altIndex = 1
+            pcall(function()
+                altIndex = select(1, getAltIndex())
+            end)
+            task.delay(math.max(0, (altIndex - 1) * 0.12), function()
+                if isUnloaded then return end
+                local joinOk, joinMsg = joinFFAServerByNumber(param)
+                if status and status.Parent then
+                    status.Text = joinMsg or (joinOk and "Joining FFA..." or "FFA join failed")
+                    status.TextColor3 = joinOk and Color3.fromRGB(120, 255, 160) or Color3.fromRGB(255, 120, 120)
+                end
+            end)
+            status.Text = "FFA: switching to #" .. tostring(param)
         end
     elseif cleanCmd == "revolver" or cleanCmd == "gun" then
         attackSubMode = "combat"
