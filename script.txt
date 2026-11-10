@@ -598,6 +598,10 @@ local C = {
     FORMATION_WEDGE_STEP = 3.5,
     FORMATION_WEDGE_SPREAD = 0.92,
     FORMATION_FLANK_DIST = 3.4,
+    FORMATION_WALL_DIST = 3.2,
+    FORMATION_COLUMN_DIST = 3.0,
+    FORMATION_CROSS_DIST = 3.6,
+    FORMATION_DIAMOND_DIST = 4.0,
     COMBAT_ORBIT_RADIUS = 5.4,
     COMBAT_ORBIT_HEIGHT = 14,
     STACK_ORBIT_RADIUS = 2.85,
@@ -2330,6 +2334,65 @@ local function getSidesWorldPosition(leaderHrp, altIndex, totalAlts)
     return getFlankWorldPosition(leaderHrp, sideIndex, math.max(1, sideCount), side)
 end
 
+-- Wide line in front of host (bodyblock).
+local function getWallWorldPosition(leaderHrp, altIndex, totalAlts)
+    local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
+    local spacing = C.FORMATION_SPACING
+    totalAlts = math.max(1, totalAlts)
+    altIndex = math.clamp(altIndex, 1, totalAlts)
+    local totalWidth = (totalAlts - 1) * spacing
+    local across = -totalWidth * 0.5 + (altIndex - 1) * spacing
+    return center + flatLook * C.FORMATION_WALL_DIST + flatRight * across
+end
+
+-- Single file tight behind host.
+local function getColumnWorldPosition(leaderHrp, altIndex, totalAlts)
+    local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
+    local spacing = C.FORMATION_SPACING
+    totalAlts = math.max(1, totalAlts)
+    altIndex = math.clamp(altIndex, 1, totalAlts)
+    local back = C.FORMATION_COLUMN_DIST + (altIndex - 1) * spacing
+    return center - flatLook * back
+end
+
+-- Cardinal cross: front, right, back, left (then rings outward).
+local function getCrossWorldPosition(leaderHrp, altIndex, totalAlts)
+    local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
+    local dist = C.FORMATION_CROSS_DIST
+    totalAlts = math.max(1, totalAlts)
+    altIndex = math.clamp(altIndex, 1, totalAlts)
+    local ring = math.floor((altIndex - 1) / 4)
+    local slot = ((altIndex - 1) % 4) + 1
+    local out = dist + ring * C.FORMATION_SPACING
+    if slot == 1 then
+        return center + flatLook * out
+    elseif slot == 2 then
+        return center + flatRight * out
+    elseif slot == 3 then
+        return center - flatLook * out
+    end
+    return center - flatRight * out
+end
+
+-- Diagonal diamond around host.
+local function getDiamondWorldPosition(leaderHrp, altIndex, totalAlts)
+    local center, flatLook, flatRight = getHostFlatBasis(leaderHrp)
+    local dist = C.FORMATION_DIAMOND_DIST
+    totalAlts = math.max(1, totalAlts)
+    altIndex = math.clamp(altIndex, 1, totalAlts)
+    local ring = math.floor((altIndex - 1) / 4)
+    local slot = ((altIndex - 1) % 4) + 1
+    local out = (dist + ring * C.FORMATION_SPACING) * 0.7071
+    if slot == 1 then
+        return center + flatLook * out + flatRight * out
+    elseif slot == 2 then
+        return center + flatLook * out - flatRight * out
+    elseif slot == 3 then
+        return center - flatLook * out + flatRight * out
+    end
+    return center - flatLook * out - flatRight * out
+end
+
 local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
     totalAlts = math.max(1, totalAlts)
     altIndex = math.clamp(altIndex, 1, totalAlts)
@@ -2364,6 +2427,18 @@ local function getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
     end
     if mode == "sides" or mode == "lr" or mode == "leftright" then
         return formationCFrameFaceForward(leaderHrp, getSidesWorldPosition(leaderHrp, altIndex, totalAlts))
+    end
+    if mode == "wall" or mode == "phalanx" then
+        return formationCFrameFaceForward(leaderHrp, getWallWorldPosition(leaderHrp, altIndex, totalAlts))
+    end
+    if mode == "column" or mode == "file" or mode == "singlefile" then
+        return formationCFrameFaceForward(leaderHrp, getColumnWorldPosition(leaderHrp, altIndex, totalAlts))
+    end
+    if mode == "cross" or mode == "plus" then
+        return formationCFrameFaceForward(leaderHrp, getCrossWorldPosition(leaderHrp, altIndex, totalAlts))
+    end
+    if mode == "diamond" or mode == "dia" then
+        return formationCFrameFaceForward(leaderHrp, getDiamondWorldPosition(leaderHrp, altIndex, totalAlts))
     end
 
     local radius = math.clamp(C.FORMATION_RING_RADIUS + (totalAlts - 1) * 0.15, 4.5, 7)
@@ -3244,6 +3319,26 @@ local function executeCommand(speaker, msg)
         isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
         isGlueFollowActive = true
         status.Text = "Formation: Back"
+    elseif cleanCmd == "wall" or cleanCmd == "phalanx" then
+        formationMode = "wall"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        isGlueFollowActive = true
+        status.Text = "Formation: Wall"
+    elseif cleanCmd == "column" or cleanCmd == "file" or cleanCmd == "singlefile" then
+        formationMode = "column"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        isGlueFollowActive = true
+        status.Text = "Formation: Column"
+    elseif cleanCmd == "cross" or cleanCmd == "plus" then
+        formationMode = "cross"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        isGlueFollowActive = true
+        status.Text = "Formation: Cross"
+    elseif cleanCmd == "diamond" or cleanCmd == "dia" then
+        formationMode = "diamond"
+        isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
+        isGlueFollowActive = true
+        status.Text = "Formation: Diamond"
     elseif cleanCmd == "shield" then
         formationMode = "shield"
         isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
