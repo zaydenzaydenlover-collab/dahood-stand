@@ -963,28 +963,11 @@ end)
 -- FORCE HIT (Q lock / Shoot packet — replaces silent aim)
 -- ==========================================
 
-local ForceHit = {
-    Enabled = true,
-    Key = Enum.KeyCode.Q,
-    FireRate = 0.12,
-    MaxLockDistance = 500,
-    CursorPickRadius = 80,
-    WallCheck = true,
-    KnockCheck = true,
-    ForceFieldCheck = true,
-    HitPartName = "Head",
-}
-
-local LockedForceTarget = nil
-local _lastForceFire = 0
-local _fhIndex = 0
-local forceHitMainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
-    or ReplicatedStorage:FindFirstChild("MainRemoteEvent")
-local forceHitConns = {}
+local ForceHit, fireForceHit, cleanupForceHit
 
 local function getAimPart(char)
     if not char then return nil end
-    local name = ForceHit.HitPartName or "Head"
+    local name = (ForceHit and ForceHit.HitPartName) or "Head"
     return char:FindFirstChild(name)
         or char:FindFirstChild("Head")
         or char:FindFirstChild("HumanoidRootPart")
@@ -1131,6 +1114,25 @@ local function snapVoidHuntCFrame(hrp, cf, pin)
     end
 end
 
+;(function()
+local FH = {
+    Enabled = true,
+    Locked = nil,
+    Key = Enum.KeyCode.Q,
+    FireRate = 0.12,
+    MaxLockDistance = 500,
+    CursorPickRadius = 80,
+    WallCheck = true,
+    KnockCheck = true,
+    ForceFieldCheck = true,
+    HitPartName = "Head",
+}
+local _lastForceFire = 0
+local _fhIndex = 0
+local forceHitMainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    or ReplicatedStorage:FindFirstChild("MainRemoteEvent")
+local forceHitConns = {}
+
 local function fhIsKnocked(char)
     if not char then return true end
     if isCharacterKnocked and isCharacterKnocked(char) then return true end
@@ -1171,8 +1173,8 @@ local function fhIsValidTarget(plr)
     if not char then return false end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return false end
-    if ForceHit.KnockCheck and fhIsKnocked(char) then return false end
-    if ForceHit.ForceFieldCheck and char:FindFirstChildOfClass("ForceField") then return false end
+    if FH.KnockCheck and fhIsKnocked(char) then return false end
+    if FH.ForceFieldCheck and char:FindFirstChildOfClass("ForceField") then return false end
     return true
 end
 
@@ -1204,14 +1206,14 @@ local function fhGetClosestToCursor()
                     end
                 end
                 local worldDist = myRoot and (part.Position - myRoot.Position).Magnitude or 0
-                if worldDist <= ForceHit.MaxLockDistance and screenDist < bestScore then
+                if worldDist <= FH.MaxLockDistance and screenDist < bestScore then
                     bestScore = screenDist
                     best = plr
                 end
             end
         end
     end
-    if best and bestScore > ForceHit.CursorPickRadius * 8 then
+    if best and bestScore > FH.CursorPickRadius * 8 then
         return nil
     end
     return best
@@ -1260,8 +1262,8 @@ local function fhFindGun()
     return nil
 end
 
-local function fireForceHit(target)
-    if not ForceHit.Enabled then return false end
+fireForceHit = function(target)
+    if not FH.Enabled then return false end
     if not target or not fhIsValidTarget(target) then return false end
     if not forceHitMainEvent then
         forceHitMainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
@@ -1270,7 +1272,7 @@ local function fireForceHit(target)
     if not forceHitMainEvent then return false end
 
     local now = tick()
-    if ForceHit.FireRate > 0 and now - _lastForceFire < ForceHit.FireRate then return false end
+    if FH.FireRate > 0 and now - _lastForceFire < FH.FireRate then return false end
 
     local tChar = getChar(target) or target.Character
     local hitPart = getAimPart(tChar)
@@ -1291,7 +1293,7 @@ local function fireForceHit(target)
 
     local handlePos = tool.Handle.Position
     local hitPos = hitPart.Position
-    if ForceHit.WallCheck and fhHasWallBetween(handlePos, hitPos) then
+    if FH.WallCheck and fhHasWallBetween(handlePos, hitPos) then
         return false
     end
 
@@ -1342,19 +1344,19 @@ local function fireForceHit(target)
 end
 
 local function toggleForceHitLock()
-    if not ForceHit.Enabled then
-        LockedForceTarget = nil
+    if not FH.Enabled then
+        FH.Locked = nil
         return
     end
-    if LockedForceTarget and LockedForceTarget.Parent then
-        LockedForceTarget = nil
+    if FH.Locked and FH.Locked.Parent then
+        FH.Locked = nil
         if status and status.Parent then
             status.Text = "ForceHit: unlocked"
         end
         return
     end
     local t = fhGetClosestToCursor()
-    LockedForceTarget = t
+    FH.Locked = t
     if status and status.Parent then
         if t then
             status.Text = "ForceHit: locked -> " .. t.Name
@@ -1366,29 +1368,32 @@ end
 
 forceHitConns[#forceHitConns + 1] = UserInputService.InputBegan:Connect(function(input, gp)
     if gp or isUnloaded then return end
-    if input.KeyCode == ForceHit.Key then
+    if input.KeyCode == FH.Key then
         toggleForceHitLock()
     end
 end)
 
 forceHitConns[#forceHitConns + 1] = RunService.Heartbeat:Connect(function()
-    if isUnloaded or not ForceHit.Enabled then return end
-    if not LockedForceTarget then return end
-    if not fhIsValidTarget(LockedForceTarget) then
-        LockedForceTarget = nil
+    if isUnloaded or not FH.Enabled then return end
+    if not FH.Locked then return end
+    if not fhIsValidTarget(FH.Locked) then
+        FH.Locked = nil
         return
     end
-    fireForceHit(LockedForceTarget)
+    fireForceHit(FH.Locked)
 end)
 
-local function cleanupForceHit()
-    LockedForceTarget = nil
-    ForceHit.Enabled = false
+cleanupForceHit = function()
+    FH.Locked = nil
+    FH.Enabled = false
     for i = 1, #forceHitConns do
         pcall(function() forceHitConns[i]:Disconnect() end)
     end
     forceHitConns = {}
 end
+
+ForceHit = FH
+end)()
 
 -- ==========================================
 -- UI PANEL
@@ -3198,7 +3203,7 @@ makeButton("Formation: Line", 256, function() formationMode = "line"; isFollowin
 makeButton("Formation: Shield", 282, function() formationMode = "shield"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; isGlueFollowActive = true; status.Text = "Formation: Shield" end)
 makeButton("Toggle ForceHit (Q)", 308, function()
     ForceHit.Enabled = not ForceHit.Enabled
-    if not ForceHit.Enabled then LockedForceTarget = nil end
+    if not ForceHit.Enabled then ForceHit.Locked = nil end
     status.Text = "ForceHit: " .. tostring(ForceHit.Enabled) .. " (Q lock)"
 end)
 makeButton("Toggle Sync Dance (.dance)", 334, function()
@@ -3379,7 +3384,7 @@ local function executeCommand(speaker, msg)
         end
     elseif cleanCmd == "silent" or cleanCmd == "silentaim" or cleanCmd == "forcehit" or cleanCmd == "fh" then
         ForceHit.Enabled = not ForceHit.Enabled
-        if not ForceHit.Enabled then LockedForceTarget = nil end
+        if not ForceHit.Enabled then ForceHit.Locked = nil end
         status.Text = "ForceHit: " .. tostring(ForceHit.Enabled) .. " (Q lock)"
     elseif cleanCmd == "reset" or cleanCmd == "forcereset" or cleanCmd == "fr" then
         targetQuery = getCommandTargetQuery(args, 2)
@@ -3786,9 +3791,8 @@ RunService.RenderStepped:Connect(function()
     local myHum = char:FindFirstChildOfClass("Humanoid")
     if not myHrp or not myHum then return end
 
-    if isHoldingGun() and myHum.Health > 0 and (not isHiding or isCombatTaskActive()) then
-        setRightClick(true)
-    else
+    -- Do not hold RMB / ADS — ForceHit does not need it.
+    if isAimingDownSights then
         setRightClick(false)
     end
 
@@ -4269,8 +4273,8 @@ RunService.RenderStepped:Connect(function()
             else
                 currentTarget = nil
             end
-        elseif LockedForceTarget and ForceHit.Enabled then
-            local lockChar = getChar(LockedForceTarget) or LockedForceTarget.Character
+        elseif ForceHit.Locked and ForceHit.Enabled then
+            local lockChar = getChar(ForceHit.Locked) or ForceHit.Locked.Character
             local lockPart = lockChar and getAimPart(lockChar)
             if lockPart then
                 Camera.CFrame = CFrame.new(Camera.CFrame.Position, lockPart.Position)
