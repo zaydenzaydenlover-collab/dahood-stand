@@ -606,12 +606,9 @@ local C = {
     FORMATION_CROSS_DIST = 3.6,
     FORMATION_DIAMOND_DIST = 4.0,
     FORMATION_SHOOT_RANGE = 220,
-    COMBAT_ORBIT_RADIUS = 7.6,
+    COMBAT_ORBIT_RADIUS = 5.4,
     COMBAT_ORBIT_HEIGHT = 14,
-    COMBAT_ORBIT_Y_STEP = 0.85,
     STACK_ORBIT_RADIUS = 2.85,
-    STOMP_RING_RADIUS = 2.6,
-    STOMP_Y_STEP = 0.7,
     GLUE_RENDER_STEP = "StandoGlueFollow",
     VOID_HUNT_RENDER_STEP = "StandoVoidHunt",
     VOID_HIDE_RX = 5200000000,
@@ -2617,7 +2614,7 @@ local function buildCombatOrbitCFrame(targetPosOrPart, altIndex, totalAlts)
     if standPositionMode == "above" or standPositionMode == "sky" then
         yLift = C.COMBAT_ORBIT_HEIGHT
     end
-    yLift = yLift + (altIndex - 1) * (C.COMBAT_ORBIT_Y_STEP or 1.35)
+    yLift = yLift + (altIndex - 1) * 0.35
     local attackOffset = Vector3.new(
         math.cos(spreadAngle) * orbitRadius,
         yLift,
@@ -2856,18 +2853,17 @@ local function getGlueStompGoalCFrame(torso, altIndex, totalAlts)
     totalAlts = math.max(1, totalAlts)
     altIndex = math.clamp(altIndex, 1, totalAlts)
     local spreadAngle = ((altIndex - 1) / totalAlts) * (2 * math.pi)
-    local ring = C.STOMP_RING_RADIUS or 4.2
-    local yStep = C.STOMP_Y_STEP or 1.15
+    local ring = 1.15
     local tPos = torso.Position
     local scale = math.max(math.abs(tPos.X), math.abs(tPos.Y), math.abs(tPos.Z), tPos.Magnitude, 1)
     if scale >= C.VOID_HUNT_ORIGIN_STUDS then
-        local y = (scale >= C.VOID_HUNT_DEEP_STUDS and 2.4 or 3.2) + (altIndex - 1) * 0.35
-        local r = scale >= C.VOID_HUNT_DEEP_STUDS and 0.9 or math.min(ring, 2.2)
+        local y = scale >= C.VOID_HUNT_DEEP_STUDS and 2.4 or 3.2
+        local r = scale >= C.VOID_HUNT_DEEP_STUDS and 0.9 or ring
         return torso.CFrame * CFrame.new(math.cos(spreadAngle) * r, y, math.sin(spreadAngle) * r)
     end
-    local base = tPos + Vector3.new(0, 3.2 + (altIndex - 1) * yStep, 0)
+    local base = tPos + Vector3.new(0, 3.2, 0)
     local pos = base + Vector3.new(math.cos(spreadAngle) * ring, 0, math.sin(spreadAngle) * ring)
-    return CFrame.new(pos, tPos + Vector3.new(0, 3.2, 0))
+    return CFrame.new(pos, base)
 end
 
 local function isGlueMovementActive()
