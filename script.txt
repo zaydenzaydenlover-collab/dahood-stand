@@ -606,7 +606,7 @@ local C = {
     FORMATION_CROSS_DIST = 3.6,
     FORMATION_DIAMOND_DIST = 4.0,
     FORMATION_SHOOT_RANGE = 220,
-    FORMATION_SHOOT_SCALE = 1.9,
+    FORMATION_SHOOT_SCALE = 2.3,
     COMBAT_ORBIT_RADIUS = 5.4,
     COMBAT_ORBIT_HEIGHT = 14,
     STACK_ORBIT_RADIUS = 2.85,
@@ -2530,7 +2530,7 @@ local function scaleFormationGoalForShoot(leaderHrp, goalCFrame)
     if not isFormationShootActive or not leaderHrp or not goalCFrame then
         return goalCFrame
     end
-    local scale = C.FORMATION_SHOOT_SCALE or 1.9
+    local scale = C.FORMATION_SHOOT_SCALE or 2.3
     if scale <= 1.01 then
         return goalCFrame
     end
