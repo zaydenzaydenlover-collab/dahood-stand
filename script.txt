@@ -960,40 +960,36 @@ task.spawn(function()
 end)
 
 -- ==========================================
--- KRAVIX SILENT AIM (HEAD LOCK, 0 PREDICTION)
+-- FORCE HIT (Q lock / Shoot packet — replaces silent aim)
 -- ==========================================
 
-local SilentAim = {
+local ForceHit = {
     Enabled = true,
-    FOV = 350,
-    Prediction = 0,
-    HitPart = "Head",
-    MaxDistance = 1000,
-    ShowFOV = true,
-    FOVColor = Color3.fromRGB(0, 255, 140),
+    Key = Enum.KeyCode.Q,
+    FireRate = 0.12,
+    MaxLockDistance = 500,
+    CursorPickRadius = 80,
+    WallCheck = true,
+    KnockCheck = true,
+    ForceFieldCheck = true,
+    HitPartName = "Head",
 }
 
-local fovCircle = nil
-pcall(function()
-    if Drawing and Drawing.new then
-        fovCircle = Drawing.new("Circle")
-        fovCircle.Thickness = 1.5
-        fovCircle.NumSides = 64
-        fovCircle.Filled = false
-        fovCircle.Transparency = 1
-        fovCircle.Color = SilentAim.FOVColor
-        fovCircle.Visible = false
-    end
-end)
+local LockedForceTarget = nil
+local _lastForceFire = 0
+local _fhIndex = 0
+local forceHitMainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+    or ReplicatedStorage:FindFirstChild("MainRemoteEvent")
+local forceHitConns = {}
 
 local function getAimPart(char)
     if not char then return nil end
-    local name = SilentAim.HitPart or "HumanoidRootPart"
+    local name = ForceHit.HitPartName or "Head"
     return char:FindFirstChild(name)
+        or char:FindFirstChild("Head")
         or char:FindFirstChild("HumanoidRootPart")
         or char:FindFirstChild("UpperTorso")
         or char:FindFirstChild("Torso")
-        or char:FindFirstChild("Head")
 end
 
 local function getOrbitAnchorPart(char)
@@ -1088,13 +1084,6 @@ local function isVoidHuntActive()
     return isOrbiting and currentTarget ~= nil and shouldVoidHuntTarget(currentTarget)
 end
 
-local function getSilentAimMaxDistance()
-    if currentTarget and shouldUseInfiniteChase(currentTarget) then
-        return C.VOID_HUNT_AIM_STUDS
-    end
-    return SilentAim.MaxDistance
-end
-
 local function snapVoidHuntCFrame(hrp, cf, pin)
     if not hrp or not (cf or pin) then return end
     hrp.Anchored = false
@@ -1142,147 +1131,264 @@ local function snapVoidHuntCFrame(hrp, cf, pin)
     end
 end
 
-local function getBestSilentTarget()
-    if not SilentAim.Enabled then return nil end
+local function fhIsKnocked(char)
+    if not char then return true end
+    if isCharacterKnocked and isCharacterKnocked(char) then return true end
+    local be = char:FindFirstChild("BodyEffects")
+    if not be then return false end
+    local ko = be:FindFirstChild("K.O") or be:FindFirstChild("KO")
+    local dead = be:FindFirstChild("Dead") or be:FindFirstChild("SDeath")
+    if dead and dead.Value then return true end
+    if ko and ko.Value then return true end
+    return false
+end
 
-    if currentTarget and not isWhitelisted(currentTarget) then
-        local char = getChar(currentTarget) or currentTarget.Character
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        local part = char and (
-            shouldUseInfiniteChase(currentTarget) and getVoidHuntAimPart(char) or getAimPart(char)
-        )
-
-        if hum and hum.Health > 0 and part then
-            local be = char:FindFirstChild("BodyEffects")
-            local isKO = be and (
-                (be:FindFirstChild("K.O") and be["K.O"].Value == true) or
-                (be:FindFirstChild("Dead") and be.Dead.Value == true)
-            )
-            if not isKO then
-                return { Part = part, Character = char }
+local function fhHasWallBetween(fromPos, toPos)
+    local ok, result = pcall(function()
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        local filter = {}
+        if LocalPlayer.Character then
+            filter[#filter + 1] = LocalPlayer.Character
+        end
+        local players = Players:GetPlayers()
+        for i = 1, #players do
+            local plr = players[i]
+            if plr.Character then
+                filter[#filter + 1] = plr.Character
             end
         end
-    end
+        params.FilterDescendantsInstances = filter
+        return workspace:Raycast(fromPos, toPos - fromPos, params)
+    end)
+    return ok and result ~= nil
+end
 
-    local bestTarget = nil
-    local shortestDist = SilentAim.FOV
+local function fhIsValidTarget(plr)
+    if not plr or plr == LocalPlayer then return false end
+    if isWhitelisted(plr) or isOwnerPlayer(plr) then return false end
+    local char = getChar(plr) or plr.Character
+    if not char then return false end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
+    if ForceHit.KnockCheck and fhIsKnocked(char) then return false end
+    if ForceHit.ForceFieldCheck and char:FindFirstChildOfClass("ForceField") then return false end
+    return true
+end
+
+local function fhGetClosestToCursor()
+    local cam = workspace.CurrentCamera
+    if not cam then return nil end
     local mousePos = UserInputService:GetMouseLocation()
-    local localHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not localHrp then return nil end
-
+    local best, bestScore = nil, math.huge
+    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     local players = Players:GetPlayers()
     for i = 1, #players do
-        local player = players[i]
-        if player ~= LocalPlayer and not isWhitelisted(player) then
-            local char = getChar(player) or player.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local part = char and getAimPart(char)
-
-            if hum and hum.Health > 0 and part then
-                local worldDist = (part.Position - localHrp.Position).Magnitude
-                if worldDist <= getSilentAimMaxDistance() then
-                    local be = char:FindFirstChild("BodyEffects")
-                    local isKO = be and (
-                        (be:FindFirstChild("K.O") and be["K.O"].Value == true) or
-                        (be:FindFirstChild("Dead") and be.Dead.Value == true)
-                    )
-
-                    if not isKO then
-                        local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
-                        if onScreen then
-                            local screen2D = Vector2.new(screenPos.X, screenPos.Y)
-                            local dist = (screen2D - mousePos).Magnitude
-                            if dist <= shortestDist then
-                                shortestDist = dist
-                                bestTarget = { Part = part, Character = char }
-                            end
-                        end
+        local plr = players[i]
+        if fhIsValidTarget(plr) then
+            local part = getAimPart(plr.Character)
+            if part then
+                local sp, onScreen = cam:WorldToViewportPoint(part.Position)
+                local screenDist
+                if onScreen and sp.Z > 0 then
+                    screenDist = (Vector2.new(sp.X, sp.Y) - Vector2.new(mousePos.X, mousePos.Y)).Magnitude
+                else
+                    local ray = cam:ViewportPointToRay(mousePos.X, mousePos.Y)
+                    local toPart = part.Position - ray.Origin
+                    local proj = ray.Direction.Unit:Dot(toPart)
+                    if proj < 0 then
+                        screenDist = 1e9
+                    else
+                        local closest = ray.Origin + ray.Direction.Unit * proj
+                        screenDist = (part.Position - closest).Magnitude * 3
                     end
+                end
+                local worldDist = myRoot and (part.Position - myRoot.Position).Magnitude or 0
+                if worldDist <= ForceHit.MaxLockDistance and screenDist < bestScore then
+                    bestScore = screenDist
+                    best = plr
                 end
             end
         end
     end
-    return bestTarget
+    if best and bestScore > ForceHit.CursorPickRadius * 8 then
+        return nil
+    end
+    return best
 end
 
-local GunHandler, OriginalGetAim
-pcall(function()
-    local modules = ReplicatedStorage:FindFirstChild("Modules") or ReplicatedStorage
-    GunHandler = require(modules:FindFirstChild("GunHandler") or modules:FindFirstChild("Framework"))
-    if GunHandler then
-        OriginalGetAim = GunHandler.getAim
+local function fhFindGun()
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    local bag = LocalPlayer:FindFirstChild("Backpack")
+    local equipped = char:FindFirstChildOfClass("Tool")
+    if equipped and equipped:FindFirstChild("Handle") then
+        local n = string.lower(equipped.Name)
+        if not (n:find("knife") or n:find("pitchfork") or n:find("stopsign") or n:find("whip")) then
+            return equipped
+        end
     end
-end)
-
-local function applyGunHandlerHook()
-    if not GunHandler or not OriginalGetAim then return end
-    GunHandler.getAim = function(origin, range)
-        if SilentAim.Enabled then
-            local best = getBestSilentTarget()
-            if best and best.Part then
-                local targetPos = best.Part.Position
-                local dir = targetPos - origin
-                if dir.Magnitude > 0.001 then
-                    return dir.Unit, range
-                end
+    local list = {}
+    if bag then
+        for _, t in ipairs(bag:GetChildren()) do list[#list + 1] = t end
+    end
+    for _, t in ipairs(char:GetChildren()) do list[#list + 1] = t end
+    local prefer = { "uzi", "revolver", "rev", "double", "db", "shotgun", "silencer", "tactical", "temper", "glock", "smg" }
+    for _, key in ipairs(prefer) do
+        for _, tool in ipairs(list) do
+            if tool:IsA("Tool") and tool:FindFirstChild("Handle") and string.lower(tool.Name):find(key, 1, true) then
+                pcall(function()
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum then hum:EquipTool(tool) end
+                end)
+                return tool
             end
         end
-        local ok, a, b = pcall(OriginalGetAim, origin, range)
-        if ok and a then return a, b end
-        return Camera.CFrame.LookVector, range
     end
-end
-
-local function removeGunHandlerHook()
-    if GunHandler and OriginalGetAim then
-        GunHandler.getAim = OriginalGetAim
-    end
-end
-
-pcall(function()
-    if hookmetamethod then
-        local oldNamecall
-        oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            local args = { ... }
-            if not checkcaller() and SilentAim.Enabled and (method == "FireServer" or method == "fireServer") then
-                local cmd = tostring(args[1])
-                if cmd == "UpdateMousePos" or cmd == "UpdateMousePosI" or cmd == "MousePos" then
-                    local best = getBestSilentTarget()
-                    if best and best.Part then
-                        args[2] = best.Part.Position
-                        return oldNamecall(self, unpack(args))
-                    end
-                elseif cmd == "ShootGun" then
-                    local best = getBestSilentTarget()
-                    if best and best.Part then
-                        args[4] = best.Part.Position
-                        args[5] = best.Part
-                        return oldNamecall(self, unpack(args))
-                    end
-                end
+    for _, tool in ipairs(list) do
+        if tool:IsA("Tool") and tool:FindFirstChild("Handle") then
+            local n = string.lower(tool.Name)
+            if not (n:find("knife") or n:find("pitchfork") or n:find("stopsign") or n:find("whip")) then
+                pcall(function()
+                    local hum = char:FindFirstChildOfClass("Humanoid")
+                    if hum then hum:EquipTool(tool) end
+                end)
+                return tool
             end
-            return oldNamecall(self, ...)
-        end))
+        end
     end
-end)
-
-if SilentAim.Enabled then
-    applyGunHandlerHook()
+    return nil
 end
 
-RunService.RenderStepped:Connect(function()
-    if fovCircle then
-        if not isUnloaded and SilentAim.Enabled and SilentAim.ShowFOV then
-            fovCircle.Position = UserInputService:GetMouseLocation()
-            fovCircle.Radius = SilentAim.FOV
-            fovCircle.Color = SilentAim.FOVColor
-            fovCircle.Visible = true
+local function fireForceHit(target)
+    if not ForceHit.Enabled then return false end
+    if not target or not fhIsValidTarget(target) then return false end
+    if not forceHitMainEvent then
+        forceHitMainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+            or ReplicatedStorage:FindFirstChild("MainRemoteEvent")
+    end
+    if not forceHitMainEvent then return false end
+
+    local now = tick()
+    if ForceHit.FireRate > 0 and now - _lastForceFire < ForceHit.FireRate then return false end
+
+    local tChar = getChar(target) or target.Character
+    local hitPart = getAimPart(tChar)
+    if not hitPart then return false end
+
+    local myChar = LocalPlayer.Character
+    if not myChar then return false end
+    local tool = myChar:FindFirstChildOfClass("Tool")
+    if not tool or not tool:FindFirstChild("Handle") then
+        tool = fhFindGun()
+    else
+        local n = string.lower(tool.Name)
+        if n:find("knife") or n:find("pitchfork") or n:find("stopsign") or n:find("whip") then
+            tool = fhFindGun()
+        end
+    end
+    if not tool or not tool:FindFirstChild("Handle") then return false end
+
+    local handlePos = tool.Handle.Position
+    local hitPos = hitPart.Position
+    if ForceHit.WallCheck and fhHasWallBetween(handlePos, hitPos) then
+        return false
+    end
+
+    local name = string.lower(tool.Name)
+    local pellets = 1
+    if name:find("shotgun") or name:find("tactical") or name:find("db") or name:find("double") then
+        pellets = 5
+    end
+
+    local hits = {}
+    for i = 1, pellets do
+        local pos = hitPos
+        if pellets > 1 then
+            pos = hitPos + Vector3.new(
+                math.random(-15, 15) / 100,
+                math.random(-15, 15) / 100,
+                math.random(-15, 15) / 100
+            )
+        end
+        hits[i] = {
+            PELLET = i,
+            POSITION = pos,
+            MODEL = tChar,
+            PART = hitPart,
+        }
+    end
+
+    local aimDir = hitPos - handlePos
+    if aimDir.Magnitude < 0.05 then
+        aimDir = Vector3.new(0, 0, -1)
+    else
+        aimDir = aimDir.Unit
+    end
+    local aim = hitPos + aimDir * 25
+
+    _fhIndex = (_fhIndex + 1) % 100
+    local packet = {
+        INDEX = _fhIndex,
+        AIM = aim,
+        ORIGIN = handlePos,
+        HITS = hits,
+    }
+
+    pcall(function() forceHitMainEvent:FireServer("Shoot", packet) end)
+    pcall(function() tool:Activate() end)
+    _lastForceFire = now
+    return true
+end
+
+local function toggleForceHitLock()
+    if not ForceHit.Enabled then
+        LockedForceTarget = nil
+        return
+    end
+    if LockedForceTarget and LockedForceTarget.Parent then
+        LockedForceTarget = nil
+        if status and status.Parent then
+            status.Text = "ForceHit: unlocked"
+        end
+        return
+    end
+    local t = fhGetClosestToCursor()
+    LockedForceTarget = t
+    if status and status.Parent then
+        if t then
+            status.Text = "ForceHit: locked -> " .. t.Name
         else
-            fovCircle.Visible = false
+            status.Text = "ForceHit: no target"
         end
     end
+end
+
+forceHitConns[#forceHitConns + 1] = UserInputService.InputBegan:Connect(function(input, gp)
+    if gp or isUnloaded then return end
+    if input.KeyCode == ForceHit.Key then
+        toggleForceHitLock()
+    end
 end)
+
+forceHitConns[#forceHitConns + 1] = RunService.Heartbeat:Connect(function()
+    if isUnloaded or not ForceHit.Enabled then return end
+    if not LockedForceTarget then return end
+    if not fhIsValidTarget(LockedForceTarget) then
+        LockedForceTarget = nil
+        return
+    end
+    fireForceHit(LockedForceTarget)
+end)
+
+local function cleanupForceHit()
+    LockedForceTarget = nil
+    ForceHit.Enabled = false
+    for i = 1, #forceHitConns do
+        pcall(function() forceHitConns[i]:Disconnect() end)
+    end
+    forceHitConns = {}
+end
 
 -- ==========================================
 -- UI PANEL
@@ -1917,8 +2023,7 @@ local function ejectScript()
     pcall(function() RunService:UnbindFromRenderStep(C.VOID_HUNT_RENDER_STEP .. "Last") end)
     pcall(setRightClick, false)
     pcall(stopSyncDance)
-    pcall(removeGunHandlerHook)
-    if fovCircle then pcall(function() fovCircle:Remove() end) end
+    pcall(cleanupForceHit)
     pcall(function()
         if standoPresenceValue then
             standoPresenceValue:Destroy()
@@ -3091,10 +3196,10 @@ makeButton("Equip Knife", 204, function() currentWeapon = "Knife"; attackSubMode
 makeButton("Formation: Circle", 230, function() formationMode = "circle"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; status.Text = "Formation: Circle (surround host)" end)
 makeButton("Formation: Line", 256, function() formationMode = "line"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; status.Text = "Formation: Line" end)
 makeButton("Formation: Shield", 282, function() formationMode = "shield"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; isGlueFollowActive = true; status.Text = "Formation: Shield" end)
-makeButton("Toggle Silent Aim", 308, function() 
-    SilentAim.Enabled = not SilentAim.Enabled
-    if SilentAim.Enabled then applyGunHandlerHook() else removeGunHandlerHook() end
-    status.Text = "Silent Aim: " .. tostring(SilentAim.Enabled) 
+makeButton("Toggle ForceHit (Q)", 308, function()
+    ForceHit.Enabled = not ForceHit.Enabled
+    if not ForceHit.Enabled then LockedForceTarget = nil end
+    status.Text = "ForceHit: " .. tostring(ForceHit.Enabled) .. " (Q lock)"
 end)
 makeButton("Toggle Sync Dance (.dance)", 334, function()
     isDanceEnabled = not isDanceEnabled
@@ -3272,10 +3377,10 @@ local function executeCommand(speaker, msg)
         else
             toggleFormationShoot()
         end
-    elseif cleanCmd == "silent" or cleanCmd == "silentaim" then
-        SilentAim.Enabled = not SilentAim.Enabled
-        if SilentAim.Enabled then applyGunHandlerHook() else removeGunHandlerHook() end
-        status.Text = "Silent Aim: " .. tostring(SilentAim.Enabled)
+    elseif cleanCmd == "silent" or cleanCmd == "silentaim" or cleanCmd == "forcehit" or cleanCmd == "fh" then
+        ForceHit.Enabled = not ForceHit.Enabled
+        if not ForceHit.Enabled then LockedForceTarget = nil end
+        status.Text = "ForceHit: " .. tostring(ForceHit.Enabled) .. " (Q lock)"
     elseif cleanCmd == "reset" or cleanCmd == "forcereset" or cleanCmd == "fr" then
         targetQuery = getCommandTargetQuery(args, 2)
         if targetQuery and targetQuery ~= "" then
@@ -4121,42 +4226,8 @@ RunService.RenderStepped:Connect(function()
                 end
             else
                 isKnifeMode = false
-                local now = tick()
-                local voidHuntFire = voidHuntCombat
-                local fireCd = voidHuntFire and C.VOID_HUNT_FIRE_COOLDOWN or 0.08
-                if aimPart and now - lastAutoFireTick >= fireCd then
-                    lastAutoFireTick = now
-                    pcall(function() activeTool:Activate() end)
-                    if activeTool:FindFirstChild("Handle") then
-                        local shotPos = aimPart.Position
-                        local handlePos = activeTool.Handle.CFrame.Position
-                        local shotDir = shotPos - handlePos
-                        if shotDir.Magnitude > 1e-3 then
-                            shotDir = shotDir.Unit
-                        else
-                            shotDir = Vector3.new(0, 0, -1)
-                        end
-                        local function fireGunRemote(remote)
-                            if not remote then return end
-                            pcall(function()
-                                remote:FireServer("UpdateMousePos", shotPos)
-                                remote:FireServer("UpdateMousePosI", shotPos)
-                                remote:FireServer(
-                                    "ShootGun",
-                                    activeTool.Handle,
-                                    handlePos,
-                                    shotPos,
-                                    aimPart,
-                                    shotDir
-                                )
-                            end)
-                        end
-                        fireGunRemote(mainEvent)
-                        if voidHuntFire then
-                            fireGunRemote(unreliableMain)
-                            fireGunRemote(mainEvent)
-                        end
-                    end
+                if fireForceHit(currentTarget) then
+                    lastAutoFireTick = tick()
                     checkAutoReloadOnTool(activeTool)
                 end
             end
@@ -4190,62 +4261,19 @@ RunService.RenderStepped:Connect(function()
                 if aimPart then
                     Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPart.Position)
                 end
-                local activeTool = char:FindFirstChildOfClass("Tool")
-                if activeTool and aimPart then
-                    local now = tick()
-                    if now - lastAutoFireTick >= 0.08 then
-                        lastAutoFireTick = now
-                        pcall(function() activeTool:Activate() end)
-                        local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
-                        local unreliableMain = ReplicatedStorage:FindFirstChild("UnreliableMainEvent")
-                        if activeTool:FindFirstChild("Handle") then
-                            local shotPos = aimPart.Position
-                            local handlePos = activeTool.Handle.CFrame.Position
-                            local shotDir = shotPos - handlePos
-                            if shotDir.Magnitude > 1e-3 then
-                                shotDir = shotDir.Unit
-                            else
-                                shotDir = Vector3.new(0, 0, -1)
-                            end
-                            if mainEvent then
-                                pcall(function()
-                                    mainEvent:FireServer("UpdateMousePos", shotPos)
-                                    mainEvent:FireServer("UpdateMousePosI", shotPos)
-                                    mainEvent:FireServer(
-                                        "ShootGun",
-                                        activeTool.Handle,
-                                        handlePos,
-                                        shotPos,
-                                        aimPart,
-                                        shotDir
-                                    )
-                                end)
-                            end
-                            if unreliableMain then
-                                pcall(function()
-                                    unreliableMain:FireServer("UpdateMousePos", shotPos)
-                                    unreliableMain:FireServer("UpdateMousePosI", shotPos)
-                                    unreliableMain:FireServer(
-                                        "ShootGun",
-                                        activeTool.Handle,
-                                        handlePos,
-                                        shotPos,
-                                        aimPart,
-                                        shotDir
-                                    )
-                                end)
-                            end
-                        end
-                        checkAutoReloadOnTool(activeTool)
-                    end
+                if fireForceHit(currentTarget) then
+                    lastAutoFireTick = tick()
+                    local activeTool = char:FindFirstChildOfClass("Tool")
+                    if activeTool then checkAutoReloadOnTool(activeTool) end
                 end
             else
                 currentTarget = nil
             end
-        elseif UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) and SilentAim.Enabled then
-            local best = getBestSilentTarget()
-            if best and best.Part then
-                Camera.CFrame = CFrame.new(Camera.CFrame.Position, best.Part.Position)
+        elseif LockedForceTarget and ForceHit.Enabled then
+            local lockChar = getChar(LockedForceTarget) or LockedForceTarget.Character
+            local lockPart = lockChar and getAimPart(lockChar)
+            if lockPart then
+                Camera.CFrame = CFrame.new(Camera.CFrame.Position, lockPart.Position)
             end
         end
     end
