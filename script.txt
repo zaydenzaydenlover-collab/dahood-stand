@@ -606,6 +606,7 @@ local C = {
     FORMATION_CROSS_DIST = 3.6,
     FORMATION_DIAMOND_DIST = 4.0,
     FORMATION_SHOOT_RANGE = 220,
+    FORMATION_SHOOT_SCALE = 1.9,
     COMBAT_ORBIT_RADIUS = 5.4,
     COMBAT_ORBIT_HEIGHT = 14,
     STACK_ORBIT_RADIUS = 2.85,
@@ -2525,6 +2526,20 @@ local function getFormationOffset(mode, altIndex, totalAlts)
     return Vector3.new(0, 0, -3)
 end
 
+local function scaleFormationGoalForShoot(leaderHrp, goalCFrame)
+    if not isFormationShootActive or not leaderHrp or not goalCFrame then
+        return goalCFrame
+    end
+    local scale = C.FORMATION_SHOOT_SCALE or 1.9
+    if scale <= 1.01 then
+        return goalCFrame
+    end
+    local center = leaderHrp.Position
+    local offset = goalCFrame.Position - center
+    local newPos = center + Vector3.new(offset.X * scale, offset.Y, offset.Z * scale)
+    return CFrame.new(newPos) * (goalCFrame - goalCFrame.Position)
+end
+
 local function applyFormationFollow_inner(myHrp, leaderHrp, mode, altIndex, totalAlts)
     local goalCFrame
     if mode == "line" then
@@ -2533,6 +2548,7 @@ local function applyFormationFollow_inner(myHrp, leaderHrp, mode, altIndex, tota
     else
         goalCFrame = getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
     end
+    goalCFrame = scaleFormationGoalForShoot(leaderHrp, goalCFrame)
 
     myHrp.AssemblyAngularVelocity = Vector3.zero
     local dist = (goalCFrame.Position - myHrp.Position).Magnitude
@@ -2548,11 +2564,14 @@ local function applyFormationFollow_inner(myHrp, leaderHrp, mode, altIndex, tota
 end
 
 local function getGlueGoalCFrame_inner(leaderHrp, mode, altIndex, totalAlts)
+    local goalCFrame
     if mode == "line" then
         local offset = getFormationOffset(mode, altIndex, totalAlts)
-        return CFrame.new(leaderHrp.Position) * leaderHrp.CFrame.Rotation * CFrame.new(offset)
+        goalCFrame = CFrame.new(leaderHrp.Position) * leaderHrp.CFrame.Rotation * CFrame.new(offset)
+    else
+        goalCFrame = getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
     end
-    return getSurroundGoalCFrame(leaderHrp, altIndex, totalAlts, mode)
+    return scaleFormationGoalForShoot(leaderHrp, goalCFrame)
 end
 applyFormationFollow = applyFormationFollow_inner
 getGlueGoalCFrame = getGlueGoalCFrame_inner
