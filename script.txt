@@ -161,6 +161,10 @@ local function addRuntimeWhitelist(player)
         isStacking = false
         stackTargetName = nil
     end
+    if formationShootTargetName and string.lower(formationShootTargetName) == string.lower(player.Name) then
+        formationShootTargetName = nil
+        isFormationShootActive = false
+    end
     return true, "Whitelisted: " .. player.Name
 end
 
@@ -554,6 +558,7 @@ local isStacking = false
 local stackTargetName = nil
 local isGuardActive = false
 local isFormationShootActive = false
+local formationShootTargetName = nil
 local isGlueFollowActive = true
 local glueDesync = false
 local glueSpot = nil
@@ -1668,6 +1673,7 @@ local function fullStopAndReturn()
     isManualTarget = false
     isGuardActive = false
     isFormationShootActive = false
+    formationShootTargetName = nil
     currentTarget = nil
     formationMode = "none"
     standPositionMode = "default"
@@ -1698,6 +1704,7 @@ local function clearCombatStateForReset()
     isManualTarget = false
     isGuardActive = false
     isFormationShootActive = false
+    formationShootTargetName = nil
     currentTarget = nil
     currentWeapon = nil
     formationMode = "none"
@@ -1751,6 +1758,7 @@ local function stopAndHide()
     isManualTarget = false
     isGuardActive = false
     isFormationShootActive = false
+    formationShootTargetName = nil
     formationMode = "none"
     stopSyncDance()
     local char = LocalPlayer.Character
@@ -1782,6 +1790,7 @@ startStand = function()
     isManualTarget = false
     isGuardActive = false
     isFormationShootActive = false
+    formationShootTargetName = nil
     currentTarget = nil
     standPositionMode = "default"
     formationMode = "none"
@@ -1796,6 +1805,7 @@ end
 local function toggleGKill()
     isGuardActive = not isGuardActive
     isFormationShootActive = false
+    formationShootTargetName = nil
     isLoopkill = false
     loopkillTargetName = nil
     isStomping = false
@@ -1827,8 +1837,8 @@ local function toggleGKill()
     end
 end
 
-local function toggleFormationShoot()
-    isFormationShootActive = not isFormationShootActive
+local function armFormationShoot(lockPlayer)
+    isFormationShootActive = true
     isGuardActive = false
     isLoopkill = false
     loopkillTargetName = nil
@@ -1842,20 +1852,34 @@ local function toggleFormationShoot()
     isManualTarget = false
     isOrbiting = false
     isHiding = false
-    if isFormationShootActive then
-        isFollowing = true
-        isGlueFollowActive = true
-        currentWeapon = "Revolver"
-        attackSubMode = "combat"
-        if equipTool then pcall(equipTool, "Revolver") end
-        status.Text = "Status: FORMATION SHOOT ON"
+    isFollowing = true
+    isGlueFollowActive = true
+    currentWeapon = "Revolver"
+    attackSubMode = "combat"
+    if equipTool then pcall(equipTool, "Revolver") end
+    if lockPlayer then
+        formationShootTargetName = lockPlayer.Name
+        currentTarget = lockPlayer
+        status.Text = "Status: FS LOCK -> " .. lockPlayer.Name .. " (shoot when close)"
         status.TextColor3 = Color3.fromRGB(120, 220, 255)
     else
+        formationShootTargetName = nil
+        status.Text = "Status: FORMATION SHOOT ON"
+        status.TextColor3 = Color3.fromRGB(120, 220, 255)
+    end
+end
+
+local function toggleFormationShoot()
+    if isFormationShootActive then
+        isFormationShootActive = false
+        formationShootTargetName = nil
         currentTarget = nil
         pcall(unequipAll)
         status.Text = "Status: FORMATION SHOOT OFF"
         status.TextColor3 = Color3.fromRGB(100, 200, 255)
+        return
     end
+    armFormationShoot(nil)
 end
 
 local function ejectScript()
@@ -3212,7 +3236,19 @@ local function executeCommand(speaker, msg)
     elseif cleanCmd == "gkill" or cleanCmd == "gk" then
         toggleGKill()
     elseif cleanCmd == "fs" or cleanCmd == "fshoot" or cleanCmd == "sg" or cleanCmd == "holdfire" or cleanCmd == "formationshoot" then
-        toggleFormationShoot()
+        targetQuery = getCommandTargetQuery(args, 2)
+        if targetQuery and targetQuery ~= "" then
+            cmdTarget = findPlayer(targetQuery)
+            if not cmdTarget then
+                status.Text = "FS: player not found!"
+            elseif isWhitelisted(cmdTarget) then
+                status.Text = "FS: target whitelisted!"
+            else
+                armFormationShoot(cmdTarget)
+            end
+        else
+            toggleFormationShoot()
+        end
     elseif cleanCmd == "silent" or cleanCmd == "silentaim" then
         SilentAim.Enabled = not SilentAim.Enabled
         if SilentAim.Enabled then applyGunHandlerHook() else removeGunHandlerHook() end
@@ -3246,6 +3282,7 @@ local function executeCommand(speaker, msg)
             isManualTarget = true
             isGuardActive = false
             isFormationShootActive = false
+            formationShootTargetName = nil
             currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
@@ -3278,6 +3315,7 @@ local function executeCommand(speaker, msg)
                 isManualTarget = true
                 isGuardActive = false
                 isFormationShootActive = false
+                formationShootTargetName = nil
                 currentTarget = cmdTarget
                 isOrbiting = true
                 isFollowing = false
@@ -3308,6 +3346,7 @@ local function executeCommand(speaker, msg)
             isManualTarget = true
             isGuardActive = false
             isFormationShootActive = false
+            formationShootTargetName = nil
             currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
@@ -3343,6 +3382,7 @@ local function executeCommand(speaker, msg)
             isManualTarget = true
             isGuardActive = false
             isFormationShootActive = false
+            formationShootTargetName = nil
             currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
@@ -3368,6 +3408,7 @@ local function executeCommand(speaker, msg)
             isManualTarget = true
             isGuardActive = false
             isFormationShootActive = false
+            formationShootTargetName = nil
             currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
@@ -3878,21 +3919,37 @@ RunService.RenderStepped:Connect(function()
         isGlueFollowActive = true
         if leaderHrp then
             local nearestEnemy = nil
-            local shortestDist = C.FORMATION_SHOOT_RANGE
-            local players = Players:GetPlayers()
-            for i = 1, #players do
-                local p = players[i]
-                if p ~= leader and p ~= LocalPlayer and not isOwnerPlayer(p) and not isWhitelisted(p) then
-                    local tHrp, pChar = getPlayerRootPart(p)
-                    if not pChar then continue end
-                    local tHum = pChar:FindFirstChildOfClass("Humanoid")
-                    if tHum and (tHum.Health <= 0 or isCharacterKnocked(pChar)) then continue end
-                    if isVoidHidingPlayer(p) then continue end
-                    if tHrp then
-                        local dist = (tHrp.Position - leaderHrp.Position).Magnitude
-                        if dist < shortestDist then
-                            shortestDist = dist
-                            nearestEnemy = p
+            if formationShootTargetName then
+                local locked = findPlayer(formationShootTargetName)
+                if locked and locked ~= leader and locked ~= LocalPlayer and not isOwnerPlayer(locked) and not isWhitelisted(locked) then
+                    local tHrp, pChar = getPlayerRootPart(locked)
+                    if pChar then
+                        local tHum = pChar:FindFirstChildOfClass("Humanoid")
+                        if tHum and tHum.Health > 0 and not isCharacterKnocked(pChar) and tHrp and not isVoidHidingPlayer(locked) then
+                            local dist = (tHrp.Position - leaderHrp.Position).Magnitude
+                            if dist < C.FORMATION_SHOOT_RANGE then
+                                nearestEnemy = locked
+                            end
+                        end
+                    end
+                end
+            else
+                local shortestDist = C.FORMATION_SHOOT_RANGE
+                local players = Players:GetPlayers()
+                for i = 1, #players do
+                    local p = players[i]
+                    if p ~= leader and p ~= LocalPlayer and not isOwnerPlayer(p) and not isWhitelisted(p) then
+                        local tHrp, pChar = getPlayerRootPart(p)
+                        if not pChar then continue end
+                        local tHum = pChar:FindFirstChildOfClass("Humanoid")
+                        if tHum and (tHum.Health <= 0 or isCharacterKnocked(pChar)) then continue end
+                        if isVoidHidingPlayer(p) then continue end
+                        if tHrp then
+                            local dist = (tHrp.Position - leaderHrp.Position).Magnitude
+                            if dist < shortestDist then
+                                shortestDist = dist
+                                nearestEnemy = p
+                            end
                         end
                     end
                 end
@@ -3903,11 +3960,19 @@ RunService.RenderStepped:Connect(function()
                 currentWeapon = "Revolver"
                 attackSubMode = "combat"
                 if newFsTarget then
-                    status.Text = "Status: FS -> " .. nearestEnemy.Name
+                    if formationShootTargetName then
+                        status.Text = "Status: FS LOCK SHOOT -> " .. nearestEnemy.Name
+                    else
+                        status.Text = "Status: FS -> " .. nearestEnemy.Name
+                    end
                     status.TextColor3 = Color3.fromRGB(120, 220, 255)
                 end
             else
                 currentTarget = nil
+                if formationShootTargetName then
+                    status.Text = "Status: FS LOCK -> " .. formationShootTargetName .. " (waiting close)"
+                    status.TextColor3 = Color3.fromRGB(120, 220, 255)
+                end
             end
         end
     end
