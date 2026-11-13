@@ -1449,11 +1449,14 @@ local function beginVoidHideEngage(_targetPlayer)
     glueSpot = nil
     glueDesync = false
     clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
-    currentWeapon = "Knife"
-    attackSubMode = "knife"
+    -- Keep selected weapon (.gun / .knife); only default to knife if unset.
+    if not currentWeapon or currentWeapon == "" then
+        currentWeapon = "Knife"
+        attackSubMode = "knife"
+    end
     isGlueFollowActive = true
     if equipTool then
-        pcall(equipTool, "Knife")
+        pcall(equipTool, currentWeapon)
     end
 end
 
@@ -3310,14 +3313,16 @@ local function executeCommand(speaker, msg)
             isFollowing = false
             isHiding = false
             formationMode = "none"
-            currentWeapon = "Knife"
-            attackSubMode = "knife"
+            if not currentWeapon or currentWeapon == "" then
+                currentWeapon = "Knife"
+                attackSubMode = "knife"
+            end
             if shouldVoidHuntTarget(cmdTarget) then
                 beginCombatChase(cmdTarget)
             else
                 if releaseGlueFollowLock then releaseGlueFollowLock() end
                 isGlueFollowActive = true
-                if equipTool then pcall(equipTool, "Knife") end
+                if equipTool then pcall(equipTool, currentWeapon) end
             end
             status.Text = "Status: STOMPING " .. cmdTarget.Name
         end
@@ -3343,9 +3348,11 @@ local function executeCommand(speaker, msg)
             isFollowing = false
             isHiding = false
             formationMode = "none"
-            currentWeapon = "Knife"
-            attackSubMode = "knife"
-            if equipTool then pcall(equipTool, "Knife") end
+            if not currentWeapon or currentWeapon == "" then
+                currentWeapon = "Knife"
+                attackSubMode = "knife"
+            end
+            if equipTool then pcall(equipTool, currentWeapon) end
             status.Text = "Status: BRING (knock) " .. cmdTarget.Name
         end
     elseif cleanCmd == "knock" or cleanCmd == "k" then
@@ -3977,15 +3984,11 @@ RunService.RenderStepped:Connect(function()
             return
         end
 
-        if currentWeapon then
-            equipTool(currentWeapon)
-        elseif shouldUseInfiniteChase(currentTarget) or isVoidHideEngaging() then
-            if currentWeapon ~= "Knife" or attackSubMode ~= "knife" then
-                currentWeapon = "Knife"
-                attackSubMode = "knife"
-            end
-            equipTool("Knife")
+        if not currentWeapon or currentWeapon == "" then
+            currentWeapon = "Knife"
+            attackSubMode = "knife"
         end
+        equipTool(currentWeapon)
 
         local activeTool = char:FindFirstChildOfClass("Tool")
         local voidHuntCombat = shouldUseInfiniteChase(currentTarget)
