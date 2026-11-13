@@ -553,6 +553,7 @@ local isManualTarget = false
 local isStacking = false
 local stackTargetName = nil
 local isGuardActive = false
+local isFormationShootActive = false
 local isGlueFollowActive = true
 local glueDesync = false
 local glueSpot = nil
@@ -602,6 +603,7 @@ local C = {
     FORMATION_COLUMN_DIST = 3.0,
     FORMATION_CROSS_DIST = 3.6,
     FORMATION_DIAMOND_DIST = 4.0,
+    FORMATION_SHOOT_RANGE = 220,
     COMBAT_ORBIT_RADIUS = 5.4,
     COMBAT_ORBIT_HEIGHT = 14,
     STACK_ORBIT_RADIUS = 2.85,
@@ -1318,7 +1320,7 @@ screenGui.ResetOnSpawn = false
 screenGui.Parent = playerGui or game:GetService("CoreGui")
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 220, 0, 538)
+frame.Size = UDim2.new(0, 220, 0, 564)
 frame.Position = UDim2.new(0.03, 0, 0.28, 0)
 frame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 frame.Active = true
@@ -1691,6 +1693,7 @@ local function fullStopAndReturn()
     stackTargetName = nil
     isManualTarget = false
     isGuardActive = false
+    isFormationShootActive = false
     currentTarget = nil
     formationMode = "none"
     standPositionMode = "default"
@@ -1720,6 +1723,7 @@ local function clearCombatStateForReset()
     stackTargetName = nil
     isManualTarget = false
     isGuardActive = false
+    isFormationShootActive = false
     currentTarget = nil
     currentWeapon = nil
     formationMode = "none"
@@ -1772,6 +1776,7 @@ local function stopAndHide()
     stackTargetName = nil
     isManualTarget = false
     isGuardActive = false
+    isFormationShootActive = false
     formationMode = "none"
     stopSyncDance()
     local char = LocalPlayer.Character
@@ -1802,6 +1807,7 @@ startStand = function()
     stackTargetName = nil
     isManualTarget = false
     isGuardActive = false
+    isFormationShootActive = false
     currentTarget = nil
     standPositionMode = "default"
     formationMode = "none"
@@ -1815,6 +1821,7 @@ end
 
 local function toggleGKill()
     isGuardActive = not isGuardActive
+    isFormationShootActive = false
     isLoopkill = false
     loopkillTargetName = nil
     isStomping = false
@@ -1842,6 +1849,37 @@ local function toggleGKill()
         status.TextColor3 = Color3.fromRGB(255, 165, 0)
     else
         status.Text = "Status: AUTO-GUARD (GKILL) ACTIVE"
+        status.TextColor3 = Color3.fromRGB(100, 200, 255)
+    end
+end
+
+local function toggleFormationShoot()
+    isFormationShootActive = not isFormationShootActive
+    isGuardActive = false
+    isLoopkill = false
+    loopkillTargetName = nil
+    isStomping = false
+    stompTargetName = nil
+    isBringing = false
+    bringTargetName = nil
+    bringPhase = nil
+    isStacking = false
+    stackTargetName = nil
+    isManualTarget = false
+    isOrbiting = false
+    isHiding = false
+    if isFormationShootActive then
+        isFollowing = true
+        isGlueFollowActive = true
+        currentWeapon = "Revolver"
+        attackSubMode = "combat"
+        if equipTool then pcall(equipTool, "Revolver") end
+        status.Text = "Status: FORMATION SHOOT ON"
+        status.TextColor3 = Color3.fromRGB(120, 220, 255)
+    else
+        currentTarget = nil
+        pcall(unequipAll)
+        status.Text = "Status: FORMATION SHOOT OFF"
         status.TextColor3 = Color3.fromRGB(100, 200, 255)
     end
 end
@@ -3040,24 +3078,25 @@ end)
 makeButton("Stand / Follow Me", 48, startStand)
 makeButton("Full Stop (.stop)", 74, function() fullStopAndReturn() end)
 makeButton("Toggle GKill (.gk)", 100, toggleGKill)
-makeButton("Force Reset (.reset)", 126, function() performForceReset() end)
-makeButton("Equip Revolver", 152, function() currentWeapon = "Revolver"; attackSubMode = "combat"; equipTool("Revolver"); status.Text = "Weapon: Revolver" end)
-makeButton("Equip Knife", 178, function() currentWeapon = "Knife"; attackSubMode = "knife"; equipTool("Knife"); status.Text = "Weapon: Knife" end)
-makeButton("Formation: Circle", 204, function() formationMode = "circle"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; status.Text = "Formation: Circle (surround host)" end)
-makeButton("Formation: Line", 230, function() formationMode = "line"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; status.Text = "Formation: Line" end)
-makeButton("Formation: Shield", 256, function() formationMode = "shield"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; isGlueFollowActive = true; status.Text = "Formation: Shield" end)
-makeButton("Toggle Silent Aim", 282, function() 
+makeButton("Formation Shoot (.fs)", 126, toggleFormationShoot)
+makeButton("Force Reset (.reset)", 152, function() performForceReset() end)
+makeButton("Equip Revolver", 178, function() currentWeapon = "Revolver"; attackSubMode = "combat"; equipTool("Revolver"); status.Text = "Weapon: Revolver" end)
+makeButton("Equip Knife", 204, function() currentWeapon = "Knife"; attackSubMode = "knife"; equipTool("Knife"); status.Text = "Weapon: Knife" end)
+makeButton("Formation: Circle", 230, function() formationMode = "circle"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; status.Text = "Formation: Circle (surround host)" end)
+makeButton("Formation: Line", 256, function() formationMode = "line"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; status.Text = "Formation: Line" end)
+makeButton("Formation: Shield", 282, function() formationMode = "shield"; isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false; isGlueFollowActive = true; status.Text = "Formation: Shield" end)
+makeButton("Toggle Silent Aim", 308, function() 
     SilentAim.Enabled = not SilentAim.Enabled
     if SilentAim.Enabled then applyGunHandlerHook() else removeGunHandlerHook() end
     status.Text = "Silent Aim: " .. tostring(SilentAim.Enabled) 
 end)
-makeButton("Toggle Sync Dance (.dance)", 308, function()
+makeButton("Toggle Sync Dance (.dance)", 334, function()
     isDanceEnabled = not isDanceEnabled
     if not isDanceEnabled then stopSyncDance() end
     status.Text = "Sync Dance: " .. (isDanceEnabled and "ON" or "OFF")
 end)
-makeButton("Stop & Sky-Zip Hide (.hide)", 334, stopAndHide)
-makeButton("Low GFX", 360, function()
+makeButton("Stop & Sky-Zip Hide (.hide)", 360, stopAndHide)
+makeButton("Low GFX", 386, function()
     local descendants = workspace:GetDescendants()
     for i = 1, #descendants do
         local v = descendants[i]
@@ -3065,11 +3104,11 @@ makeButton("Low GFX", 360, function()
     end
     status.Text = "Low GFX Applied"
 end)
-makeButton("Rejoin Server", 386, function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
-makeButton("Eject / Unload (.eject)", 412, function() ejectScript() end)
-makeButton("Toggle Glue (.glue)", 438, function() toggleGlueFollow() end)
-makeButton("Anti Stomp (.as)", 464, function() toggleAntiStomp() end)
-makeButton("Toggle Menu View", 490, function() frame.Visible = not frame.Visible end)
+makeButton("Rejoin Server", 412, function() TeleportService:Teleport(game.PlaceId, LocalPlayer) end)
+makeButton("Eject / Unload (.eject)", 438, function() ejectScript() end)
+makeButton("Toggle Glue (.glue)", 464, function() toggleGlueFollow() end)
+makeButton("Anti Stomp (.as)", 490, function() toggleAntiStomp() end)
+makeButton("Toggle Menu View", 516, function() frame.Visible = not frame.Visible end)
 
 local function sendAltChat(text)
     text = tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
@@ -3213,6 +3252,8 @@ local function executeCommand(speaker, msg)
         fullStopAndReturn()
     elseif cleanCmd == "gkill" or cleanCmd == "gk" then
         toggleGKill()
+    elseif cleanCmd == "fs" or cleanCmd == "fshoot" or cleanCmd == "sg" or cleanCmd == "holdfire" or cleanCmd == "formationshoot" then
+        toggleFormationShoot()
     elseif cleanCmd == "silent" or cleanCmd == "silentaim" then
         SilentAim.Enabled = not SilentAim.Enabled
         if SilentAim.Enabled then applyGunHandlerHook() else removeGunHandlerHook() end
@@ -3245,6 +3286,7 @@ local function executeCommand(speaker, msg)
             bringPhase = nil
             isManualTarget = true
             isGuardActive = false
+            isFormationShootActive = false
             currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
@@ -3276,6 +3318,7 @@ local function executeCommand(speaker, msg)
                 bringPhase = nil
                 isManualTarget = true
                 isGuardActive = false
+                isFormationShootActive = false
                 currentTarget = cmdTarget
                 isOrbiting = true
                 isFollowing = false
@@ -3305,6 +3348,7 @@ local function executeCommand(speaker, msg)
             bringPhase = nil
             isManualTarget = true
             isGuardActive = false
+            isFormationShootActive = false
             currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
@@ -3337,6 +3381,7 @@ local function executeCommand(speaker, msg)
             stackTargetName = nil
             isManualTarget = true
             isGuardActive = false
+            isFormationShootActive = false
             currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
@@ -3359,6 +3404,7 @@ local function executeCommand(speaker, msg)
             bringPhase = nil
             isManualTarget = true
             isGuardActive = false
+            isFormationShootActive = false
             currentTarget = cmdTarget
             isOrbiting = true
             isFollowing = false
@@ -3862,6 +3908,47 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
+    -- Formation shoot: stay in formation, auto-aim + shoot (no chase)
+    if isFormationShootActive and not isGuardActive and not isManualTarget and not isLoopkill and not isStacking and not isStomping and not isBringing and tick() >= bringCombatLockUntil then
+        isOrbiting = false
+        isFollowing = true
+        isGlueFollowActive = true
+        if leaderHrp then
+            local nearestEnemy = nil
+            local shortestDist = C.FORMATION_SHOOT_RANGE
+            local players = Players:GetPlayers()
+            for i = 1, #players do
+                local p = players[i]
+                if p ~= leader and p ~= LocalPlayer and not isOwnerPlayer(p) and not isWhitelisted(p) then
+                    local tHrp, pChar = getPlayerRootPart(p)
+                    if not pChar then continue end
+                    local tHum = pChar:FindFirstChildOfClass("Humanoid")
+                    if tHum and (tHum.Health <= 0 or isCharacterKnocked(pChar)) then continue end
+                    if isVoidHidingPlayer(p) then continue end
+                    if tHrp then
+                        local dist = (tHrp.Position - leaderHrp.Position).Magnitude
+                        if dist < shortestDist then
+                            shortestDist = dist
+                            nearestEnemy = p
+                        end
+                    end
+                end
+            end
+            if nearestEnemy then
+                local newFsTarget = currentTarget ~= nearestEnemy
+                currentTarget = nearestEnemy
+                currentWeapon = "Revolver"
+                attackSubMode = "combat"
+                if newFsTarget then
+                    status.Text = "Status: FS -> " .. nearestEnemy.Name
+                    status.TextColor3 = Color3.fromRGB(120, 220, 255)
+                end
+            else
+                currentTarget = nil
+            end
+        end
+    end
+
     if isLoopkill and loopkillTargetName then
         currentTarget = findPlayer(loopkillTargetName)
     end
@@ -4044,7 +4131,60 @@ RunService.RenderStepped:Connect(function()
         end
     else
         isKnifeMode = false
-        if UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) and SilentAim.Enabled then
+        if isFormationShootActive and currentTarget and not isWhitelisted(currentTarget) and tick() >= bringCombatLockUntil then
+            local fsChar = getChar(currentTarget) or currentTarget.Character
+            local fsHum = fsChar and fsChar:FindFirstChildOfClass("Humanoid")
+            local fsHrp = fsChar and fsChar:FindFirstChild("HumanoidRootPart")
+            if fsChar and fsHum and fsHum.Health > 0 and fsHrp and not isCharacterKnocked(fsChar) then
+                currentWeapon = "Revolver"
+                attackSubMode = "combat"
+                equipTool("Revolver")
+                local aimPart = getAimPart(fsChar) or fsChar:FindFirstChild("Head") or fsHrp
+                if aimPart then
+                    Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPart.Position)
+                end
+                local activeTool = char:FindFirstChildOfClass("Tool")
+                if activeTool and aimPart then
+                    local now = tick()
+                    if now - lastAutoFireTick >= 0.08 then
+                        lastAutoFireTick = now
+                        pcall(function() activeTool:Activate() end)
+                        local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
+                        local unreliableMain = ReplicatedStorage:FindFirstChild("UnreliableMainEvent")
+                        if activeTool:FindFirstChild("Handle") then
+                            local shotPos = aimPart.Position
+                            local handlePos = activeTool.Handle.CFrame.Position
+                            local shotDir = shotPos - handlePos
+                            if shotDir.Magnitude > 1e-3 then
+                                shotDir = shotDir.Unit
+                            else
+                                shotDir = Vector3.new(0, 0, -1)
+                            end
+                            local function fireFsGun(remote)
+                                if not remote then return end
+                                pcall(function()
+                                    remote:FireServer("UpdateMousePos", shotPos)
+                                    remote:FireServer("UpdateMousePosI", shotPos)
+                                    remote:FireServer(
+                                        "ShootGun",
+                                        activeTool.Handle,
+                                        handlePos,
+                                        shotPos,
+                                        aimPart,
+                                        shotDir
+                                    )
+                                end)
+                            end
+                            fireFsGun(mainEvent)
+                            fireFsGun(unreliableMain)
+                        end
+                        checkAutoReloadOnTool(activeTool)
+                    end
+                end
+            else
+                currentTarget = nil
+            end
+        elseif UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) and SilentAim.Enabled then
             local best = getBestSilentTarget()
             if best and best.Part then
                 Camera.CFrame = CFrame.new(Camera.CFrame.Position, best.Part.Position)
