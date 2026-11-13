@@ -30,7 +30,7 @@ local LocalPlayer = Players.LocalPlayer
 
 -- First online owner in this list becomes leader; both can always command.
 local OWNER_NAMES = {
-    "r0zxxx",
+    "dudasgoodpuppy21ax97",
 }
 local function isOwnerPlayer(player)
     if not player then return false end
@@ -82,6 +82,8 @@ local WHITELISTED_USERS = {
     ["wveaklur"] = true,
     ["dandysworldlegend9"] = true,
     ["MattyBRapsFan20177"] = true,
+    ["dudasgoodpuppy67"] = true,
+    ["zaydenpuppy67"] = true,
 }
 
 local ARMY_USERS = {
@@ -91,6 +93,8 @@ local ARMY_USERS = {
     ["filmon1335"] = true,
     ["orionAur55"] = true,
     ["idan1235838"] = true,
+    ["dudasgoodpuppy67"] = true,
+    ["zaydenpuppy67"] = true,
 }
 
 local STANDO_PRESENCE_FOLDER = "StandoArmyPresence"
