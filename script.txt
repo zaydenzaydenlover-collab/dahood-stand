@@ -1751,24 +1751,42 @@ equipTool = function(toolName)
     local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
     if not humanoid or not backpack then return end
 
-    local currentEquipped = char:FindFirstChildOfClass("Tool")
-    if currentEquipped then
-        if string.find(string.lower(currentEquipped.Name), string.lower(toolName)) then
-            return
-        else
-            humanoid:UnequipTools()
-            task.wait(0.05)
+    local want = string.lower(toolName)
+    local function toolScore(name)
+        local n = string.lower(name)
+        if n == want then return 100 end
+        if not string.find(n, want, 1, true) then return -1 end
+        -- Prefer plain Shotgun over TacticalShotgun when asking for shotgun
+        if want == "shotgun" and string.find(n, "tactical", 1, true) then return 1 end
+        if want == "double" or want == "double-barrel" or want == "doublebarrel" then
+            if string.find(n, "double", 1, true) then return 80 end
         end
+        return 50 - math.min(40, #n)
     end
 
+    local currentEquipped = char:FindFirstChildOfClass("Tool")
+    if currentEquipped and toolScore(currentEquipped.Name) >= 50 then
+        return
+    elseif currentEquipped then
+        humanoid:UnequipTools()
+        task.wait(0.05)
+    end
+
+    local best, bestScore = nil, -1
     local items = backpack:GetChildren()
     for i = 1, #items do
         local item = items[i]
-        if item:IsA("Tool") and string.find(string.lower(item.Name), string.lower(toolName)) then
-            pcall(function() humanoid:EquipTool(item) end)
-            task.defer(function() setupToolReloadListener(item) end)
-            break
+        if item:IsA("Tool") then
+            local sc = toolScore(item.Name)
+            if sc > bestScore then
+                bestScore = sc
+                best = item
+            end
         end
+    end
+    if best then
+        pcall(function() humanoid:EquipTool(best) end)
+        task.defer(function() setupToolReloadListener(best) end)
     end
 end
 
@@ -1970,9 +1988,11 @@ local function armFormationShoot(lockPlayer)
     isHiding = false
     isFollowing = true
     isGlueFollowActive = true
-    currentWeapon = "Revolver"
+    if not currentWeapon or currentWeapon == "" or currentWeapon == "Knife" then
+        currentWeapon = "Revolver"
+    end
     attackSubMode = "combat"
-    if equipTool then pcall(equipTool, "Revolver") end
+    if equipTool then pcall(equipTool, currentWeapon) end
     if lockPlayer then
         formationShootTargetName = lockPlayer.Name
         currentTarget = lockPlayer
@@ -1980,7 +2000,7 @@ local function armFormationShoot(lockPlayer)
         status.TextColor3 = Color3.fromRGB(120, 220, 255)
     else
         formationShootTargetName = nil
-        status.Text = "Status: FORMATION SHOOT ON"
+        status.Text = "Status: FORMATION SHOOT ON (" .. tostring(currentWeapon) .. ")"
         status.TextColor3 = Color3.fromRGB(120, 220, 255)
     end
 end
@@ -3549,11 +3569,48 @@ local function executeCommand(speaker, msg)
             beginCombatChase(cmdTarget)
             status.Text = "Status: CHASE K -> " .. cmdTarget.Name
         end
-    elseif cleanCmd == "knife" then
-        attackSubMode = "knife"
-        currentWeapon = "Knife"
-        equipTool("Knife")
-        status.Text = "Weapon: Knife"
+    elseif cleanCmd == "knife"
+        or cleanCmd == "revolver" or cleanCmd == "gun" or cleanCmd == "rev"
+        or cleanCmd == "db" or cleanCmd == "double" or cleanCmd == "doublebarrel" or cleanCmd == "double-barrel"
+        or cleanCmd == "smg" or cleanCmd == "uzi"
+        or cleanCmd == "shotgun"
+        or cleanCmd == "silencer" or cleanCmd == "sil"
+        or cleanCmd == "tactical" or cleanCmd == "tac" or cleanCmd == "tacticalshotgun"
+        or cleanCmd == "nogun" or cleanCmd == "none" or cleanCmd == "unequipgun" then
+        cmdMsg = cleanCmd
+        if cleanCmd == "gun" and param and param ~= "" then
+            cmdMsg = normalizeCmdToken(param)
+        end
+        if cmdMsg == "nogun" or cmdMsg == "none" or cmdMsg == "unequipgun" then
+            currentWeapon = nil
+            attackSubMode = "combat"
+            pcall(unequipAll)
+            status.Text = "Weapon: None"
+        elseif cmdMsg == "knife" then
+            attackSubMode = "knife"
+            currentWeapon = "Knife"
+            equipTool("Knife")
+            status.Text = "Weapon: Knife"
+        else
+            if cmdMsg == "gun" or cmdMsg == "rev" or cmdMsg == "revolver" then
+                currentWeapon = "Revolver"
+            elseif cmdMsg == "db" or cmdMsg == "double" or cmdMsg == "doublebarrel" or cmdMsg == "double-barrel" then
+                currentWeapon = "Double-Barrel"
+            elseif cmdMsg == "smg" or cmdMsg == "uzi" then
+                currentWeapon = "SMG"
+            elseif cmdMsg == "shotgun" then
+                currentWeapon = "Shotgun"
+            elseif cmdMsg == "silencer" or cmdMsg == "sil" then
+                currentWeapon = "Silencer"
+            elseif cmdMsg == "tactical" or cmdMsg == "tac" or cmdMsg == "tacticalshotgun" then
+                currentWeapon = "TacticalShotgun"
+            else
+                currentWeapon = "Revolver"
+            end
+            attackSubMode = "combat"
+            equipTool(currentWeapon)
+            status.Text = "Weapon: " .. tostring(currentWeapon)
+        end
     elseif cleanCmd == "size" or cleanCmd == "muscle" or cleanCmd == "musclesize" then
         if not param or param == "" then
             status.Text = "Size: .size 0-30000"
@@ -3583,11 +3640,6 @@ local function executeCommand(speaker, msg)
             end)
             status.Text = "FFA: switching to #" .. tostring(param)
         end
-    elseif cleanCmd == "revolver" or cleanCmd == "gun" then
-        attackSubMode = "combat"
-        currentWeapon = "Revolver"
-        equipTool("Revolver")
-        status.Text = "Weapon: Revolver"
     elseif cleanCmd == "box" then
         formationMode = "box"
         isFollowing = true; isHiding = false; isOrbiting = false; isLoopkill = false; isStomping = false; isManualTarget = false; isGuardActive = false
@@ -4089,7 +4141,9 @@ RunService.RenderStepped:Connect(function()
             if nearestEnemy then
                 local newFsTarget = currentTarget ~= nearestEnemy
                 currentTarget = nearestEnemy
-                currentWeapon = "Revolver"
+                if not currentWeapon or currentWeapon == "" or currentWeapon == "Knife" then
+                    currentWeapon = "Revolver"
+                end
                 attackSubMode = "combat"
                 if newFsTarget then
                     if formationShootTargetName then
@@ -4258,9 +4312,11 @@ RunService.RenderStepped:Connect(function()
             local fsHum = fsChar and fsChar:FindFirstChildOfClass("Humanoid")
             local fsHrp = fsChar and fsChar:FindFirstChild("HumanoidRootPart")
             if fsChar and fsHum and fsHum.Health > 0 and fsHrp and not isCharacterKnocked(fsChar) then
-                currentWeapon = "Revolver"
+                if not currentWeapon or currentWeapon == "" or currentWeapon == "Knife" then
+                    currentWeapon = "Revolver"
+                end
                 attackSubMode = "combat"
-                equipTool("Revolver")
+                equipTool(currentWeapon)
                 local aimPart = getAimPart(fsChar) or fsChar:FindFirstChild("Head") or fsHrp
                 if aimPart then
                     Camera.CFrame = CFrame.new(Camera.CFrame.Position, aimPart.Position)
