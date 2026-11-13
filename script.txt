@@ -4484,4 +4484,4 @@ getgenv().StandoAntiStomp = true
 getgenv().StandoLoaded = true
 pcall(function()
     warn("[Stando] loaded on " .. LocalPlayer.Name .. " | Anti-stomp ON (reset when HP <= " .. R.ANTI_STOMP_HP_RESET_AT .. ")")
-end)
+end) -- hello
