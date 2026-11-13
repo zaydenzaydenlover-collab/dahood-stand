@@ -1751,25 +1751,28 @@ equipTool = function(toolName)
     local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
     if not humanoid or not backpack then return end
 
-    local want = string.lower(toolName)
+    local want = string.lower(toolName):gsub("%s+", ""):gsub("_", "-")
     local function toolScore(name)
         local n = string.lower(name)
-        if n == want then return 100 end
-        if not string.find(n, want, 1, true) then return -1 end
+        local nCompact = n:gsub("%s+", ""):gsub("%[%]", "")
+        if n == want or nCompact == want then return 100 end
+        local matched = string.find(n, want, 1, true) or string.find(nCompact, want, 1, true)
+        if not matched then
+            if want == "double-barrel" or want == "doublebarrel" or want == "double" then
+                matched = string.find(n, "double", 1, true)
+            elseif want == "tacticalshotgun" or want == "tactical" then
+                matched = string.find(n, "tactical", 1, true)
+            end
+        end
+        if not matched then return -1 end
         -- Prefer plain Shotgun over TacticalShotgun when asking for shotgun
         if want == "shotgun" and string.find(n, "tactical", 1, true) then return 1 end
-        if want == "double" or want == "double-barrel" or want == "doublebarrel" then
-            if string.find(n, "double", 1, true) then return 80 end
-        end
-        return 50 - math.min(40, #n)
+        return 80
     end
 
     local currentEquipped = char:FindFirstChildOfClass("Tool")
-    if currentEquipped and toolScore(currentEquipped.Name) >= 50 then
+    if currentEquipped and toolScore(currentEquipped.Name) >= 40 then
         return
-    elseif currentEquipped then
-        humanoid:UnequipTools()
-        task.wait(0.05)
     end
 
     local best, bestScore = nil, -1
@@ -1784,10 +1787,25 @@ equipTool = function(toolName)
             end
         end
     end
-    if best then
-        pcall(function() humanoid:EquipTool(best) end)
-        task.defer(function() setupToolReloadListener(best) end)
+    -- Also check currently equipped (may still be best)
+    if currentEquipped then
+        local sc = toolScore(currentEquipped.Name)
+        if sc > bestScore then
+            bestScore = sc
+            best = currentEquipped
+        end
     end
+    if not best or bestScore < 40 then return end
+    if currentEquipped == best then
+        task.defer(function() setupToolReloadListener(best) end)
+        return
+    end
+    if currentEquipped then
+        humanoid:UnequipTools()
+        task.wait(0.05)
+    end
+    pcall(function() humanoid:EquipTool(best) end)
+    task.defer(function() setupToolReloadListener(best) end)
 end
 
 local function fullStopAndReturn()
