@@ -84,6 +84,7 @@ local WHITELISTED_USERS = {
     ["MattyBRapsFan20177"] = true,
     ["dudasgoodpuppy67"] = true,
     ["zaydenpuppy67"] = true,
+    ["Vladop"] = true,
 }
 
 local ARMY_USERS = {
@@ -95,6 +96,7 @@ local ARMY_USERS = {
     ["idan1235838"] = true,
     ["dudasgoodpuppy67"] = true,
     ["zaydenpuppy67"] = true,
+    ["Vladop"] = true,
 }
 
 local STANDO_PRESENCE_FOLDER = "StandoArmyPresence"
@@ -4484,4 +4486,4 @@ getgenv().StandoAntiStomp = true
 getgenv().StandoLoaded = true
 pcall(function()
     warn("[Stando] loaded on " .. LocalPlayer.Name .. " | Anti-stomp ON (reset when HP <= " .. R.ANTI_STOMP_HP_RESET_AT .. ")")
-end) -- hello
+end)
