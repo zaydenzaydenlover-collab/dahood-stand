@@ -568,13 +568,6 @@ local function clearGluePhysics(root)
     glueSpot = nil
 end
 
-local function clearInvertGlue()
-    if invertGluedRoot and sethiddenproperty then
-        pcall(function() sethiddenproperty(invertGluedRoot, "PhysicsRepRootPart", nil) end)
-    end
-    invertGluedRoot = nil
-end
-
 local isAntiStompActive = true
 local antiStompKoConn = nil
 local antiStompDiedConn = nil
@@ -635,12 +628,8 @@ local C = {
     VOID_HUNT_FIRE_COOLDOWN = 0.02,
     VOID_ORBIT_MIN_RADIUS = 12,
     VOID_ORBIT_Y_STEP = 1.25,
-    -- Invert glue: pull TARGET onto YOU (alts stay put). Friend method.
-    INVERT_GLUE_WRITES = 64,
-    INVERT_GLUE_RENDER_STEP = "StandoInvertGlue",
 }
 local voidHideSavedParts = {}
-local invertGluedRoot = nil
 
 local function clearVoidHideProtection(char)
     if not char then
@@ -1087,23 +1076,6 @@ end
 local function isVoidHuntActive()
     if resetInProgress then return false end
     return isOrbiting and currentTarget ~= nil and shouldVoidHuntTarget(currentTarget)
-end
-
-local function getInvertPullLocalCF(altIndex, totalAlts)
-    totalAlts = math.max(1, totalAlts or 1)
-    altIndex = math.clamp(altIndex or 1, 1, totalAlts)
-    local slot = ((altIndex - 1) % 3) + 1
-    if slot == 1 then
-        return CFrame.new(0, 1.05, -1.25)
-    elseif slot == 2 then
-        return CFrame.new(0, 2.75, 0.15)
-    end
-    return CFrame.new(0, -0.9, 0.35)
-end
-
--- Invert glue kept OFF — friend's pull-target method did not work in testing.
-local function shouldInvertGlueCombat()
-    return false
 end
 
 local function getSilentAimMaxDistance()
@@ -1678,7 +1650,6 @@ end
 
 local function fullStopAndReturn()
     setRightClick(false)
-    pcall(clearInvertGlue)
     pcall(function() clearVoidHideProtection(getChar(LocalPlayer)) end)
     isOrbiting = false
     isHiding = false
@@ -1906,14 +1877,12 @@ local function ejectScript()
     end
     pcall(fullStopAndReturn)
     isGlueFollowActive = false
-    pcall(clearInvertGlue)
     pcall(function()
         clearGluePhysics(getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart"))
     end)
     pcall(function() RunService:UnbindFromRenderStep(C.GLUE_RENDER_STEP) end)
     pcall(function() RunService:UnbindFromRenderStep(C.VOID_HUNT_RENDER_STEP) end)
     pcall(function() RunService:UnbindFromRenderStep(C.VOID_HUNT_RENDER_STEP .. "Last") end)
-    pcall(function() RunService:UnbindFromRenderStep(C.INVERT_GLUE_RENDER_STEP) end)
     pcall(setRightClick, false)
     pcall(stopSyncDance)
     pcall(removeGunHandlerHook)
@@ -2682,83 +2651,81 @@ local function fireMuscleSize(amount)
     return true, amount
 end
 
-local function extractFFAServerGuid(entry)
-    if type(entry) == "string" and entry ~= "" then
-        return entry
-    end
-    if type(entry) ~= "table" then
-        return nil
-    end
-    local keys = {
-        "Id", "id", "ID", "JobId", "jobId", "jobid",
-        "GUID", "Guid", "guid", "UUID", "Uuid", "uuid",
-        "ServerId", "serverId", "InstanceId", "instanceId", "key",
-    }
-    for i = 1, #keys do
-        local v = entry[keys[i]]
-        if type(v) == "string" and v ~= "" then
-            return v
+local function joinFFAServerByNumber(serverNumber)
+    local function extractGuid(entry)
+        if type(entry) == "string" and entry ~= "" then
+            return entry
         end
-    end
-    if type(entry.key) == "string" and entry.key ~= "" then
-        return entry.key
-    end
-    if type(entry.value) == "string" and entry.value ~= "" then
-        return entry.value
-    end
-    if type(entry.value) == "table" then
-        return extractFFAServerGuid(entry.value)
-    end
-    return nil
-end
-
-local function normalizeFFAServerList(raw)
-    local out = {}
-    if type(raw) ~= "table" then
-        return out
-    end
-    local maxIndex = 0
-    for k, _ in pairs(raw) do
-        if type(k) == "number" and k > maxIndex then
-            maxIndex = k
+        if type(entry) ~= "table" then
+            return nil
         end
-    end
-    if maxIndex > 0 then
-        for i = 1, maxIndex do
-            if raw[i] ~= nil then
-                out[#out + 1] = raw[i]
+        local keys = {
+            "Id", "id", "ID", "JobId", "jobId", "jobid",
+            "GUID", "Guid", "guid", "UUID", "Uuid", "uuid",
+            "ServerId", "serverId", "InstanceId", "instanceId", "key",
+        }
+        for i = 1, #keys do
+            local v = entry[keys[i]]
+            if type(v) == "string" and v ~= "" then
+                return v
             end
         end
-    else
-        for k, v in pairs(raw) do
-            if type(k) == "string" then
-                if type(v) == "table" then
-                    if extractFFAServerGuid(v) then
-                        out[#out + 1] = v
-                    else
-                        out[#out + 1] = { Id = k, Data = v }
+        if type(entry.key) == "string" and entry.key ~= "" then
+            return entry.key
+        end
+        if type(entry.value) == "string" and entry.value ~= "" then
+            return entry.value
+        end
+        if type(entry.value) == "table" then
+            return extractGuid(entry.value)
+        end
+        return nil
+    end
+    local function normalizeList(raw)
+        local out = {}
+        if type(raw) ~= "table" then
+            return out
+        end
+        local maxIndex = 0
+        for k, _ in pairs(raw) do
+            if type(k) == "number" and k > maxIndex then
+                maxIndex = k
+            end
+        end
+        if maxIndex > 0 then
+            for i = 1, maxIndex do
+                if raw[i] ~= nil then
+                    out[#out + 1] = raw[i]
+                end
+            end
+        else
+            for k, v in pairs(raw) do
+                if type(k) == "string" then
+                    if type(v) == "table" then
+                        if extractGuid(v) then
+                            out[#out + 1] = v
+                        else
+                            out[#out + 1] = { Id = k, Data = v }
+                        end
+                    elseif type(v) == "string" then
+                        out[#out + 1] = k
                     end
-                elseif type(v) == "string" then
-                    out[#out + 1] = k
                 end
             end
         end
+        table.sort(out, function(a, b)
+            local function orderOf(entry)
+                if type(entry) ~= "table" then return nil end
+                return tonumber(entry.Number or entry.number or entry.Index or entry.index or entry.Order or entry.order or entry.ServerNumber)
+            end
+            local na, nb = orderOf(a), orderOf(b)
+            if na and nb then return na < nb end
+            if na then return true end
+            if nb then return false end
+            return false
+        end)
+        return out
     end
-    table.sort(out, function(a, b)
-        local function orderOf(entry)
-            if type(entry) ~= "table" then return nil end
-            return tonumber(entry.Number or entry.number or entry.Index or entry.index or entry.Order or entry.order or entry.ServerNumber)
-        end
-        local na, nb = orderOf(a), orderOf(b)
-        if na and nb then return na < nb end
-        if na then return true end
-        if nb then return false end
-        return false
-    end)
-    return out
-end
-
-local function joinFFAServerByNumber(serverNumber)
     serverNumber = tonumber(serverNumber)
     if not serverNumber or serverNumber < 1 then
         return false, "use .server 1"
@@ -2775,14 +2742,14 @@ local function joinFFAServerByNumber(serverNumber)
     if not ok then
         return false, "GetFFAServerList failed"
     end
-    local list = normalizeFFAServerList(raw)
+    local list = normalizeList(raw)
     if #list < 1 then
         return false, "no FFA servers"
     end
     if serverNumber > #list then
         return false, "only " .. tostring(#list) .. " servers"
     end
-    local guid = extractFFAServerGuid(list[serverNumber])
+    local guid = extractGuid(list[serverNumber])
     if not guid then
         return false, "server #" .. tostring(serverNumber) .. " has no id"
     end
@@ -2876,10 +2843,6 @@ local function isGlueMovementActive()
     return isFollowing or isOrbiting
 end
 
-local function runInvertGluePull()
-    clearInvertGlue()
-end
-
 local function runVoidHuntMaintain()
     if not isVoidHuntActive() then return end
     local char = getChar(LocalPlayer)
@@ -2901,7 +2864,6 @@ end
 local function releaseGlueFollowLock()
     glueSpot = nil
     glueDesync = false
-    clearInvertGlue()
     local hrp = getChar(LocalPlayer) and getChar(LocalPlayer):FindFirstChild("HumanoidRootPart")
     clearGluePhysics(hrp)
 end
@@ -3043,12 +3005,6 @@ pcall(function()
         pcall(runVoidHuntMaintain)
     end)
 end)
-pcall(function()
-    RunService:BindToRenderStep(C.INVERT_GLUE_RENDER_STEP, Enum.RenderPriority.First.Value, function()
-        pcall(runInvertGluePull)
-    end)
-end)
-
 pcall(function()
     RunService:BindToRenderStep(C.GLUE_RENDER_STEP, Enum.RenderPriority.First.Value, function()
         if not isGlueMovementActive() then return end
@@ -4160,12 +4116,11 @@ RunService.RenderStepped:Connect(function()
                             else
                                 shotDir = Vector3.new(0, 0, -1)
                             end
-                            local function fireFsGun(remote)
-                                if not remote then return end
+                            if mainEvent then
                                 pcall(function()
-                                    remote:FireServer("UpdateMousePos", shotPos)
-                                    remote:FireServer("UpdateMousePosI", shotPos)
-                                    remote:FireServer(
+                                    mainEvent:FireServer("UpdateMousePos", shotPos)
+                                    mainEvent:FireServer("UpdateMousePosI", shotPos)
+                                    mainEvent:FireServer(
                                         "ShootGun",
                                         activeTool.Handle,
                                         handlePos,
@@ -4175,8 +4130,20 @@ RunService.RenderStepped:Connect(function()
                                     )
                                 end)
                             end
-                            fireFsGun(mainEvent)
-                            fireFsGun(unreliableMain)
+                            if unreliableMain then
+                                pcall(function()
+                                    unreliableMain:FireServer("UpdateMousePos", shotPos)
+                                    unreliableMain:FireServer("UpdateMousePosI", shotPos)
+                                    unreliableMain:FireServer(
+                                        "ShootGun",
+                                        activeTool.Handle,
+                                        handlePos,
+                                        shotPos,
+                                        aimPart,
+                                        shotDir
+                                    )
+                                end)
+                            end
                         end
                         checkAutoReloadOnTool(activeTool)
                     end
